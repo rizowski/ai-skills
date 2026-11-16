@@ -19,7 +19,7 @@ Add the marketplace, then install a plugin:
 
 ```sh
 claude plugin marketplace add rizowski/ai-skills
-claude plugin install orchestrator@ai-skills
+claude plugin install orchestrator@rizo-ai-skills
 ```
 
 Inside a session, the same steps are:
@@ -37,8 +37,8 @@ Start the skill with `/orchestrator`, or `/orchestrator:orchestrator` if another
 
 Each plugin sets a `version` in its `plugin.json`. An install stays on its copy until that version changes, so bump it with every release.
 
-- **Automatic:** run `/plugin`, open **Marketplaces**, select `ai-skills`, and choose **Enable auto-update**.
-- **Manual:** `claude plugin marketplace update ai-skills`, then `claude plugin update orchestrator@ai-skills`.
+- **Automatic:** run `/plugin`, open **Marketplaces**, select `rizo-ai-skills`, and choose **Enable auto-update**.
+- **Manual:** `claude plugin marketplace update rizo-ai-skills`, then `claude plugin update orchestrator@rizo-ai-skills`.
 - In a running session, apply an update with `/reload-plugins`.
 
 ## Add a plugin
