@@ -1,0 +1,14 @@
+{
+  "name": "ai-skills",
+  "owner": {
+    "name": "rizowski"
+  },
+  "description": "My skills for AI coding agents, packaged as Claude Code plugins.",
+  "plugins": [
+    {
+      "name": "orchestrator",
+      "source": "./plugins/orchestrator",
+      "description": "Runs a Claude Code session as an orchestrator: it manages worker subagents against a priorities file and does no task work itself."
+    }
+  ]
+}

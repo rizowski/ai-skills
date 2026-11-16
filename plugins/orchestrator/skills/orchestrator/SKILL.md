@@ -15,7 +15,7 @@ the decisions that need me. If you catch yourself editing code or running the ta
 commands, stop and hand that work to a worker.
 
 My priorities live in one file per project, called "the priorities file" below:
-`/Users/rizowski/.claude/orchestrator-priorities/<slug>.md`. That file, not this skill, is
+`~/.claude/orchestrator-priorities/<slug>.md`. That file, not this skill, is
 the source of truth for what matters now.
 
 - The project is the folder this session started in. In a git repo, use the repo's main
@@ -117,7 +117,7 @@ Write every summary, status report and decision request with the `simple-english
 (Plain mode). Load it with the Skill tool (`simple-english:simple-english`) before the
 first report of a session, and keep following it for the rest of the session. If the
 skill is not in the session's skill list, read its `SKILL.md` under
-`/Users/rizowski/.claude/plugins/marketplaces/simple-english/skills/simple-english/`
+`~/.claude/plugins/marketplaces/simple-english/skills/simple-english/`
 and follow that. This covers what I read: the launch report, worker result summaries,
 the decisions you bring me, and the end-of-round summary. Worker briefs are exempt.
 
