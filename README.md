@@ -4,7 +4,7 @@ My skills for AI coding agents, packaged as a Claude Code plugin marketplace.
 
 | Plugin | What it does |
 |---|---|
-| [orchestrator](plugins/orchestrator/skills/orchestrator/SKILL.md) | Runs a Claude Code session as an orchestrator: it manages worker subagents against a priorities file and does no task work itself. |
+| [orchestrator](plugins/orchestrator/skills/orchestrator/SKILL.md) | Runs a Claude Code session as an orchestrator: it manages worker subagents against a priorities file, does no task work itself, and shows its open Work tasks in a pane. |
 
 ## Install
 
@@ -32,6 +32,18 @@ Inside a session, the same steps are:
 If the clone tries SSH and fails, set `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1`.
 
 Start the skill with `/orchestrator`, or `/orchestrator:orchestrator` if another command uses that name.
+
+## Orchestrator tasks pane
+
+The orchestrator plugin also adds a pane called **Orchestrator tasks**. It shows the open tasks the orchestrator is tracking.
+
+The tasks live in the Tasks tab of the Work app. Each project has one parent task titled `Claude orchestrator: <project>`, with one subtask for each high-level request. The pane lists the open subtasks of every such parent task, sorted by priority and then by age. Blocked tasks show a mark.
+
+- It needs the `Work` MCP server to be connected. If it is not, the pane shows an error line and tries again.
+- It opens when a session starts. Run `/orch-tasks` to open it and refresh it at any time.
+- It refreshes every 2 minutes, and right after Claude creates, updates or deletes a Work task.
+- If a refresh fails, the pane keeps the last good list and shows the error.
+- It is read-only. It never changes a task.
 
 ## Updates
 
