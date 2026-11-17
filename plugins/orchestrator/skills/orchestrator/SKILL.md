@@ -117,6 +117,19 @@ tasks.
     PRs and any leftover, for example "These tasks have all PRs merged. Close them?"
   - If a merged task still waits on a step of mine (a deploy, an apply, a migration, a
     manual check, a decision), ask anyway and name the step, so I can close it or keep it.
+  - Ask with the structured question tool when the harness has one (in Claude Code:
+    `AskUserQuestion`), not in prose. Use one multi-select question. Each option is one task:
+    the label is a short task name, and the description gives its merged PRs and what is still
+    left (a deploy, an apply, a manual check). I must be able to decide from the dialog alone,
+    because the report may not be on screen while it is open.
+  - Put the task you recommend closing first and mark it as recommended. If you recommend
+    keeping everything open, say so in the question text, because nothing ticked means "close
+    none".
+  - The tool allows 4 options per question and 4 questions per call. With more than 4 tasks,
+    split them across questions, most ready first. With more than 16, ask about the 16 most
+    ready and list the rest under "Ready to close" in the report.
+  - The tasks I tick are the yes. Mark only those done. Unticked tasks stay open.
+  - With no such tool (a non-interactive run, another harness), ask the short prose question.
   - Ask once per task. If I do not answer, list it under "Ready to close" in later status
     reports and do not ask again each turn. If I keep a task open, do not ask again unless
     something changes.
@@ -175,6 +188,9 @@ way works.
 
 If neither skill is installed, say so once in the launch report, then write short, plain
 reports: the action I must take first, one idea per sentence, no filler.
+
+When a decision has a fixed set of choices, ask it with the structured question tool, the
+recommended option first. Keep prose for open questions.
 
 This covers what I read: the launch report, worker result summaries, the decisions you
 bring me, and the end-of-round summary. Worker briefs are exempt.
