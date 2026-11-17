@@ -42,8 +42,8 @@ the source of truth for what matters now.
 
 - **Delegate every task to a subagent on Opus 5.5 or a smaller model.** Set `model` on
   every Agent call to `"opus"`, `"sonnet"` or `"haiku"`. Pick the smallest model that can do
-  the job well: `haiku` for lookups and status checks, `sonnet` for routine changes, `opus`
-  for hard or risky work.
+  the job well: `haiku` for lookups and status checks, `sonnet` for routine changes (the
+  default for workers), `opus` only for hard or risky work, and the brief says why.
 - **Investigate through workers, never inline.** Work only from a worker's summarized
   report. A follow-up question about a report goes to that worker (SendMessage) or to a
   new one. Red flags: you are about to run a second lookup to understand the first one, or
@@ -55,8 +55,15 @@ the source of truth for what matters now.
 - **Never use `subagent_type: "fork"` for delegated work.** A fork always runs on your own
   model and ignores the `model` override, so it breaks the rule above.
 - **Use the project's specialist agents when one fits** (check the agent types listed in
-  the session, for example `home-assistant-operator` for Home Assistant work). Use
-  `general-purpose` otherwise.
+  the session, for example `home-assistant-operator` for Home Assistant work). When none
+  fits, prefer `orchestrator:scout` for read-only lookups and `orchestrator:worker` for code
+  tasks. They start with far less context than `general-purpose`. Use `general-purpose` or a
+  specialist when the task needs MCP tools (cloud, trackers, browsers): scout and worker have
+  none.
+- **Resume a worker only while its cache is warm.** A worker's prompt cache lasts 5 minutes
+  by default. Send a follow-up (SendMessage) to the same worker only within that window or
+  when its context is truly needed. Otherwise start a fresh worker with a short brief that
+  points at the PR or files.
 - **Give each worker its own worktree** (`isolation: "worktree"`) and drive the work to an
   open PR. One task can need several PRs; track each one.
 - **Workers never deploy, apply, run migrations, or force push.** Put this sentence in
@@ -75,7 +82,8 @@ the source of truth for what matters now.
 Each brief is the only context the worker gets. Include: the goal, the repo and the
 priority it serves, the tracker task id (see "Tracking work"), what is already known or
 ruled out, the files or PRs to start from, the "do not deploy, apply, run migrations, or
-force push" line, and what to report back (PR number and URL, CI state, open questions,
+force push" line, "do not start helper agents for small searches", a word cap for the
+report (for example 250 words), and what to report back (PR number and URL, CI state, open questions,
 any command I must run). For an investigation, ask for a summary, not a dump: the answer
 first, the evidence as a few specific facts (ids, times, file and line), what was not
 verified, and the next action. Tell the worker to change nothing.
@@ -100,9 +108,11 @@ tasks.
   a worker starts, a comment for each result that matters (branch, commit, PR, what was
   checked, what is unproven, commands I must run), review when the work is finished or
   stuck. I mark tasks done; you never do.
-- **Workers update their own task.** Give the task id in the brief and tell the worker to
-  comment on it and move it to review. Check the task after the worker reports, and fix
-  it if the worker did not.
+- **Workers update their own task** when they have the tracker tool. Give the task id in
+  the brief and tell the worker to comment on it and move it to review, so you do not
+  rewrite task text yourself. `orchestrator:scout` and `orchestrator:worker` have no
+  tracker tool, so for those you update the task from their report. Check the task after
+  the worker reports, and fix it if the worker did not.
 - **Leftovers become tasks.** Work I chose to do later, open questions and skipped
   findings go to the tracker (in Kanzo, tagged `deferred`), not into the priorities file
   or auto-memory. Follow the repo's own rules for this when it has them (for example a
