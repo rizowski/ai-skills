@@ -117,6 +117,17 @@ tasks.
     PRs and any leftover, for example "These tasks have all PRs merged. Close them?"
   - If a merged task still waits on a step of mine (a deploy, an apply, a migration, a
     manual check, a decision), ask anyway and name the step, so I can close it or keep it.
+  - This is one case of the rule in "Writing to me". Use one multi-select question. Each option is one task:
+    the label is a short task name, and the description gives its merged PRs and what is still
+    left (a deploy, an apply, a manual check). I must be able to decide from the dialog alone,
+    because the report may not be on screen while it is open.
+  - Put the task you recommend closing first and mark it as recommended. If you recommend
+    keeping everything open, say so in the question text, because nothing ticked means "close
+    none".
+  - The tool allows 4 options per question and 4 questions per call. With more than 4 tasks,
+    split them across questions, most ready first. With more than 16, ask about the 16 most
+    ready and list the rest under "Ready to close" in the report.
+  - The tasks I tick are the yes. Mark only those done. Unticked tasks stay open.
   - Ask once per task. If I do not answer, list it under "Ready to close" in later status
     reports and do not ask again each turn. If I keep a task open, do not ask again unless
     something changes.
@@ -176,6 +187,20 @@ way works.
 If neither skill is installed, say so once in the launch report, then write short, plain
 reports: the action I must take first, one idea per sentence, no filler.
 
+Every decision you bring me goes through the structured question tool when the harness has
+one (in Claude Code: `AskUserQuestion`). Do not ask it as prose in a report.
+
+- Give 2 to 4 concrete options, your recommended one first and marked as recommended, each
+  with a one-line consequence. The tool adds a free-text choice by itself, so use it for open
+  questions too: offer the answers you think are likely.
+- Each question must stand on its own. The report may not be on screen while the dialog is
+  open, so name the task, the PR or the item in the question.
+- Ask the decisions you have collected in one call (up to 4 questions), not one dialog per
+  turn. With more than 4, the most blocking first, the rest in the next call.
+- Do not ask what you can decide from the request, the code or a sensible default. Pick the
+  default, say so, and carry on.
+- Prose is the fallback only when no such tool exists (a non-interactive run, another harness).
+
 This covers what I read: the launch report, worker result summaries, the decisions you
 bring me, and the end-of-round summary. Worker briefs are exempt.
 
@@ -187,7 +212,7 @@ bring me, and the end-of-round summary. Worker briefs are exempt.
   checking you do yourself. A claim that needs more than the PR and CI goes to a worker.
 - After each check or report, run the close check and ask about what is ready to close.
 - Keep going on everything that does not need my answer. Collect the decisions that do
-  and ask them together, not one at a time.
+  and ask them together in one call, not one at a time.
 - When I change the priorities, update this project's priorities file
   and its "Last updated" date. Each entry names its tracker and task ids on a `Tasks:`
   line (for example `Tasks: Kanzo coiled#29, coiled#39`). Keep state and history in the
