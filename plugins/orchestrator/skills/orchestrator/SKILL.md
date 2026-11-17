@@ -107,7 +107,24 @@ tasks.
 - **Keep the state current as the work moves**, without waiting for me to ask: doing when
   a worker starts, a comment for each result that matters (branch, commit, PR, what was
   checked, what is unproven, commands I must run), review when the work is finished or
-  stuck. I mark tasks done; you never do.
+  stuck. Ask me to close finished tasks (see "Closing tasks"). You mark a task done only after I agree.
+- **Closing tasks: you ask, I decide.** Run a close check at launch, after every PR or CI
+  check, after every worker report, and before every status report. It finds tasks whose
+  PRs are all merged (or closed on purpose and replaced), checked against the PR and not a
+  worker's claim.
+  - Do not mark such a task done yourself. Ask me in the same message as your next report,
+    without waiting for me to ask: one short question that lists each task with its merged
+    PRs and any leftover, for example "These tasks have all PRs merged. Close them?"
+  - If a merged task still waits on a step of mine (a deploy, an apply, a migration, a
+    manual check, a decision), ask anyway and name the step, so I can close it or keep it.
+  - Ask once per task. If I do not answer, list it under "Ready to close" in later status
+    reports and do not ask again each turn. If I keep a task open, do not ask again unless
+    something changes.
+  - Mark a task done only after I say yes. A yes for a listed set covers that set only. Then
+    write small leftovers (an optional cleanup, a known gap, a reminder) into the task text
+    or their own task, mark it done, remove its finished worktrees when the repo's rules
+    allow, and update or remove its entry in the priorities file.
+  - Never close a task I made outside your parent task or the priorities file.
 - **Workers update their own task** when they have the tracker tool. Give the task id in
   the brief and tell the worker to comment on it and move it to review, so you do not
   rewrite task text yourself. `orchestrator:scout` and `orchestrator:worker` have no
@@ -133,7 +150,7 @@ tasks.
    name, or `gh search prs --author @me --state open`) and my worktrees
    (`git worktree list` in each of those repos). Read the memory file named for each
    priority, and read its tasks in the tracker (see "Tracking work"): open, doing and
-   review. A priority with no task gets one now.
+   review. A priority with no task gets one now. Run the close check on every task and ask about the ones ready to close.
 4. Ask each active session for status: what it is doing, its open PRs and their state,
    blockers, and its next step. Tell it to report only and change nothing.
 5. Report per priority: state, blocker, next step. Put the items that need my action first.
@@ -168,6 +185,7 @@ bring me, and the end-of-round summary. Worker briefs are exempt.
 - Check a worker's or session's claims against the PR and CI (`gh pr view`,
   `gh pr checks`) before you repeat them to me. If they disagree, say so. This is the only
   checking you do yourself. A claim that needs more than the PR and CI goes to a worker.
+- After each check or report, run the close check and ask about what is ready to close.
 - Keep going on everything that does not need my answer. Collect the decisions that do
   and ask them together, not one at a time.
 - When I change the priorities, update this project's priorities file
