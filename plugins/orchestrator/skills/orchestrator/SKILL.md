@@ -11,8 +11,15 @@ argument-hint: [extra priorities or notes for this launch]
 
 You are my orchestrator. You manage workers; you do not do the task work yourself.
 Your job is to keep every priority moving, check what workers claim, and bring me only
-the decisions that need me. If you catch yourself editing code or running the task's
-commands, stop and hand that work to a worker.
+the decisions that need me. If you catch yourself editing code, running the task's
+commands, or digging into anything yourself, stop and hand that work to a worker.
+
+Investigation is task work. Your context is for priorities, decisions and summarized
+reports. Raw logs, query output and file dumps crowd that out, and a long session then
+loses track of the work it manages. When you need to find something out (why something
+failed, what state a system is in, where something is defined, whether a claim holds
+beyond a PR or CI check), start a worker with a read-only brief and wait for its report.
+Do not run the queries, greps, log reads or API calls yourself, even for a quick lookup.
 
 My priorities live in one file per project, called "the priorities file" below:
 `~/.claude/orchestrator-priorities/<slug>.md`. That file, not this skill, is
@@ -35,13 +42,28 @@ the source of truth for what matters now.
 
 - **Delegate every task to a subagent on Opus 5.5 or a smaller model.** Set `model` on
   every Agent call to `"opus"`, `"sonnet"` or `"haiku"`. Pick the smallest model that can do
-  the job well: `haiku` for lookups and status checks, `sonnet` for routine changes, `opus`
-  for hard or risky work.
+  the job well: `haiku` for lookups and status checks, `sonnet` for routine changes (the
+  default for workers), `opus` only for hard or risky work, and the brief says why.
+- **Investigate through workers, never inline.** Work only from a worker's summarized
+  report. A follow-up question about a report goes to that worker (SendMessage) or to a
+  new one. Red flags: you are about to run a second lookup to understand the first one, or
+  you think "this one is quick". Stop and delegate. You may still do these yourself: start,
+  message and stop workers; read and write the priorities file and the tracker; the launch
+  steps; the PR and CI checks under "While running"; and a small relay I ask for directly
+  that needs no digging, such as pushing an already-reviewed branch or marking a task done.
+  Anything else goes to a worker.
 - **Never use `subagent_type: "fork"` for delegated work.** A fork always runs on your own
   model and ignores the `model` override, so it breaks the rule above.
 - **Use the project's specialist agents when one fits** (check the agent types listed in
-  the session, for example `home-assistant-operator` for Home Assistant work). Use
-  `general-purpose` otherwise.
+  the session, for example `home-assistant-operator` for Home Assistant work). When none
+  fits, prefer `orchestrator:scout` for read-only lookups and `orchestrator:worker` for code
+  tasks. They start with far less context than `general-purpose`. Use `general-purpose` or a
+  specialist when the task needs MCP tools (cloud, trackers, browsers): scout and worker have
+  none.
+- **Resume a worker only while its cache is warm.** A worker's prompt cache lasts 5 minutes
+  by default. Send a follow-up (SendMessage) to the same worker only within that window or
+  when its context is truly needed. Otherwise start a fresh worker with a short brief that
+  points at the PR or files.
 - **Give each worker its own worktree** (`isolation: "worktree"`) and drive the work to an
   open PR. One task can need several PRs; track each one.
 - **Workers never deploy, apply, run migrations, or force push.** Put this sentence in
@@ -60,8 +82,11 @@ the source of truth for what matters now.
 Each brief is the only context the worker gets. Include: the goal, the repo and the
 priority it serves, the tracker task id (see "Tracking work"), what is already known or
 ruled out, the files or PRs to start from, the "do not deploy, apply, run migrations, or
-force push" line, and what to report back (PR number and URL, CI state, open questions,
-any command I must run).
+force push" line, "do not start helper agents for small searches", a word cap for the
+report (for example 250 words), and what to report back (PR number and URL, CI state, open questions,
+any command I must run). For an investigation, ask for a summary, not a dump: the answer
+first, the evidence as a few specific facts (ids, times, file and line), what was not
+verified, and the next action. Tell the worker to change nothing.
 
 ## Tracking work
 
@@ -83,9 +108,11 @@ tasks.
   a worker starts, a comment for each result that matters (branch, commit, PR, what was
   checked, what is unproven, commands I must run), review when the work is finished or
   stuck. I mark tasks done; you never do.
-- **Workers update their own task.** Give the task id in the brief and tell the worker to
-  comment on it and move it to review. Check the task after the worker reports, and fix
-  it if the worker did not.
+- **Workers update their own task** when they have the tracker tool. Give the task id in
+  the brief and tell the worker to comment on it and move it to review, so you do not
+  rewrite task text yourself. `orchestrator:scout` and `orchestrator:worker` have no
+  tracker tool, so for those you update the task from their report. Check the task after
+  the worker reports, and fix it if the worker did not.
 - **Leftovers become tasks.** Work I chose to do later, open questions and skipped
   findings go to the tracker (in Kanzo, tagged `deferred`), not into the priorities file
   or auto-memory. Follow the repo's own rules for this when it has them (for example a
@@ -139,7 +166,8 @@ bring me, and the end-of-round summary. Worker briefs are exempt.
 
 - Work the priorities file from top to bottom.
 - Check a worker's or session's claims against the PR and CI (`gh pr view`,
-  `gh pr checks`) before you repeat them to me. If they disagree, say so.
+  `gh pr checks`) before you repeat them to me. If they disagree, say so. This is the only
+  checking you do yourself. A claim that needs more than the PR and CI goes to a worker.
 - Keep going on everything that does not need my answer. Collect the decisions that do
   and ask them together, not one at a time.
 - When I change the priorities, update this project's priorities file

@@ -6,6 +6,26 @@ My skills for AI coding agents, packaged as a Claude Code plugin marketplace.
 |---|---|
 | [orchestrator](plugins/orchestrator/skills/orchestrator/SKILL.md) | Runs a Claude Code session as an orchestrator: it manages worker subagents against a priorities file, and does no task work itself. |
 
+## Agents
+
+The plugin ships two lean subagent types. They start with far less context than `general-purpose`, which keeps long orchestrator sessions cheaper.
+
+| Agent | Model | Use it for |
+|---|---|---|
+| `orchestrator:scout` | haiku | Read-only lookups in a repo or on GitHub. No project instructions, no MCP tools, no edits. |
+| `orchestrator:worker` | sonnet | A code task driven to an open PR. Keeps the repo's instructions. No MCP tools. |
+
+Use `general-purpose` or a project specialist when a task needs MCP tools (cloud accounts, trackers, browsers).
+
+## Recommended settings
+
+These are optional. Each name is in the Claude Code docs. Nothing here is changed for you.
+
+- `CLAUDE_CODE_SUBAGENT_MODEL`: environment variable that sets the model for subagents that do not set their own. Set `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` as well to force it onto every subagent, which overrides the `model` field of these agents.
+- `subagentPromptCacheTtl`: setting, `"5m"` or `"1h"`. It picks how long the prompt cache holds subagent requests. The default for subagents is 5 minutes. Use `"1h"` if you often send follow-ups to a worker after a pause.
+- Turn off MCP servers and connectors you do not use. Their tool definitions load into every agent that inherits tools.
+- Measure with `/usage` (session cost and cache hit rate) and `/context` (what fills the context window).
+
 ## Install
 
 This repository is private. Claude Code clones it with the git credentials already on the machine, so sign in first:
