@@ -107,6 +107,10 @@ tasks.
   or create it, in the project of the group it touches. Search first so you do not file a
   duplicate. A priority with several parts gets one parent task and one task per part,
   linked.
+- **Label every task title.** When you create a task, or first pick a label for a priority
+  (see "Labeling responses"), prefix the task title with the label. Add it to the existing
+  tasks of that priority at the same time. Do not add a second label if the title already
+  starts with one. Do not retitle tasks that are not in the priorities file.
 - **Keep the state current as the work moves**, without waiting for me to ask: doing when
   a worker starts, a comment for each result that matters (branch, commit, PR, what was
   checked, what is unproven, commands I must run), review when the work is finished or
@@ -220,6 +224,9 @@ For example: `**[LABOR]** Phase 4, step 3 of 5.`
 - Never write a contentless line such as "Nothing new from that notice" without a label.
   Say which task a notice or worker report belongs to.
 - A reply about the orchestrator itself uses `**[ORCHESTRATOR]**`.
+- Put the same label at the start of the title of every tracker task for that priority,
+  in plain brackets with no markdown, for example `[LABOR] Labor changes`. Several tasks
+  under one priority share one label.
 
 ## While running
 
