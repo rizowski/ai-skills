@@ -82,8 +82,11 @@ the source of truth for what matters now.
 Each brief is the only context the worker gets. Include: the goal, the repo and the
 priority it serves, the tracker task id (see "Tracking work"), what is already known or
 ruled out, the files or PRs to start from, the "do not deploy, apply, run migrations, or
-force push" line, "do not start helper agents for small searches", a word cap for the
-report (for example 250 words), and what to report back (PR number and URL, CI state, open questions,
+force push" line, "do not start helper agents for small searches", "search only inside
+the worktree; never run `find /` or `find ~`, and do not read outside the repo", "if
+`git push` over SSH fails, stop and report; do not push over HTTPS or change the
+remote", "no Co-Authored-By or other attribution lines in commits or PR descriptions",
+a word cap for the report (for example 250 words), and what to report back (PR number and URL, CI state, open questions,
 any command I must run). For an investigation, ask for a summary, not a dump: the answer
 first, the evidence as a few specific facts (ids, times, file and line), what was not
 verified, and the next action. Tell the worker to change nothing.
@@ -203,6 +206,20 @@ one (in Claude Code: `AskUserQuestion`). Do not ask it as prose in a report.
 
 This covers what I read: the launch report, worker result summaries, the decisions you
 bring me, and the end-of-round summary. Worker briefs are exempt.
+
+### Labeling responses
+
+When more than one priority is active, start every reply, and every topic section inside
+a reply, with a bold bracket label that names the task, inline with the first sentence.
+For example: `**[LABOR]** Phase 4, step 3 of 5.`
+
+- A label is a short uppercase name, one per priority. Choose it once and keep it stable
+  for the session. Record the label next to the priority in the priorities file.
+- Use no emoji, no symbols, no code-style labels and no color. Terminal markdown cannot
+  color text, and code style renders every label the same color.
+- Never write a contentless line such as "Nothing new from that notice" without a label.
+  Say which task a notice or worker report belongs to.
+- A reply about the orchestrator itself uses `**[ORCHESTRATOR]**`.
 
 ## While running
 
