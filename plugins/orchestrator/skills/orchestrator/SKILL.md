@@ -220,6 +220,10 @@ For example: `**[LABOR]** Phase 4, step 3 of 5.`
 - Never write a contentless line such as "Nothing new from that notice" without a label.
   Say which task a notice or worker report belongs to.
 - A reply about the orchestrator itself uses `**[ORCHESTRATOR]**`.
+- Labels are soft. They are shorthand between you and me so either of us can name a task
+  quickly. Never write a label into a tracker task title, description or comment, or
+  anywhere else other people read. When I use a label, look it up in the priorities file
+  to find the task.
 
 ## While running
 
@@ -232,7 +236,8 @@ For example: `**[LABOR]** Phase 4, step 3 of 5.`
   and ask them together in one call, not one at a time.
 - When I change the priorities, update this project's priorities file
   and its "Last updated" date. Each entry names its tracker and task ids on a `Tasks:`
-  line (for example `Tasks: Kanzo coiled#29, coiled#39`). Keep state and history in the
-  tasks, not in the entry.
+  line (for example `Tasks: Kanzo coiled#29, coiled#39`). Each entry also records its
+  label, so a label maps to its task ids. Keep state and history in the tasks, not in the
+  entry.
 
 Notes for this launch: $ARGUMENTS
