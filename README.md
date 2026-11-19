@@ -4,7 +4,7 @@ My skills for AI coding agents, packaged as a Claude Code plugin marketplace.
 
 | Plugin | What it does |
 |---|---|
-| [orchestrator](plugins/orchestrator/skills/orchestrator/SKILL.md) | Runs a Claude Code session as an orchestrator: it manages worker subagents against a priorities file, and does no task work itself. |
+| [orchestrator](plugins/orchestrator/skills/orchestrator/SKILL.md) | Runs a Claude Code session as an orchestrator: it manages worker subagents against a priorities file, does no task work itself, and shows the project's tracker tasks in a pane. |
 
 ## Agents
 
@@ -53,7 +53,47 @@ If the clone tries SSH and fails, set `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1`.
 
 Start the skill with `/orchestrator`, or `/orchestrator:orchestrator` if another command uses that name.
 
-Version 2.0.0 removed the **Orchestrator tasks** pane and its `/orch-tasks` command. The pane read one tracker's tasks, so it now ships with the project that uses that tracker.
+## Orchestrator tasks pane
+
+The plugin adds a pane called **Orchestrator tasks**. It shows the tasks that the orchestrator tracks for the project of the session.
+
+- It opens when a session starts. Run `/orch-tasks` to open it and refresh it at any time.
+- It refreshes every 2 minutes. It also refreshes right after Claude changes a Work task, or runs a `gh` command that changes an issue or a Project item.
+- If no source can be read, the pane shows an error line, keeps the last list and tries again.
+
+### Sources
+
+A source is a tracker that the pane can read. The pane tries the sources of the project in order and shows the first one that answers.
+
+| Source | What it reads | What it needs |
+|---|---|---|
+| `work` | The open subtasks of each task titled `Claude orchestrator: <project>` in the Tasks tab of the Work app, sorted by priority and then by age. | The `Work` MCP server, connected. |
+| `github` | The issues and pull requests of this repository on the owner's GitHub Projects, grouped by the `Status` field. | The `gh` CLI, signed in with the `project` scope. |
+
+A project with no configuration file gets `work` first and `github` second.
+
+### Configuration per project
+
+To choose the sources of a project, add `.claude/orchestrator-tasks.json` at the root of its repository:
+
+```json
+{
+  "sources": [
+    { "type": "github", "owner": "my-org", "projects": ["Core", "Shop"], "statuses": ["Doing", "Review"] }
+  ]
+}
+```
+
+- `sources`: the sources to try, in order. List one source to turn the fallback off.
+- `owner` (`github`): the user or organization that owns the Projects. The default is the owner of the `origin` remote.
+- `projects` (`github`): the titles of the Projects to read. The default is every open Project of the owner. A title that does not exist is an error.
+- `statuses` (`github`): the `Status` values to show, in the order drawn. The default is `Doing` and `Review`.
+
+The `github` source shows only items from the repository of the session. It skips draft items.
+
+If the file has a mistake, the pane shows the mistake and reads no source. It does not fall back to the defaults.
+
+Version 2.0.0 removed the pane because it read only Work. Version 2.7.0 brings it back with sources per project.
 
 ## Updates
 

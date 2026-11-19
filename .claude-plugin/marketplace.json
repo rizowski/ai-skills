@@ -8,7 +8,7 @@
     {
       "name": "orchestrator",
       "source": "./plugins/orchestrator",
-      "description": "Runs a Claude Code session as an orchestrator: it manages worker subagents against a priorities file, and does no task work itself."
+      "description": "Runs a Claude Code session as an orchestrator: it manages worker subagents against a priorities file, does no task work itself, and shows the project's tracker tasks in a pane."
     }
   ]
 }
