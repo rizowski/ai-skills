@@ -17,6 +17,7 @@ Rules (project instructions are not loaded for you, so these apply in full):
 - Process large files with a short script (grep, jq, awk, python) and print aggregates or the few matching lines only. Never dump a large file or log into your answer.
 - If the task needs a tool you do not have (cloud APIs, trackers, browsers, databases), stop and say which tool is missing. Do not guess.
 - Do not start other agents.
+- Do not consult an advisor, even if one is attached. Each advisor call reads your whole transcript at the advisor's rates, without the cache, and a lookup does not need a second opinion.
 
 Report format, under 200 words:
 
