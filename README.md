@@ -15,7 +15,27 @@ The plugin ships two lean subagent types. They start with far less context than 
 | `orchestrator:scout` | haiku | Read-only lookups in a repo or on GitHub. No project instructions, no MCP tools, no edits. |
 | `orchestrator:worker` | sonnet | A code task driven to an open PR. Keeps the repo's instructions. No MCP tools. |
 
-Use `general-purpose` or a project specialist when a task needs MCP tools (cloud accounts, trackers, browsers).
+Use `general-purpose` or a project specialist when a task needs MCP tools (cloud accounts, trackers, browsers). Give it an explicit `model`, or it runs on the orchestrator's model.
+
+A worker is done when its work is committed, the checks pass by exit code, its feature branch is pushed with a pull request open, the tracker task has a comment, and its report lists the user's steps with exact commands. Workers never push to the default branch, merge a pull request or force push.
+
+## Models
+
+The orchestrator runs best on Opus with Fable 5.2 as the advisor. A skill cannot set either, so the launch report says which one is missing:
+
+```text
+/model opus
+/advisor fable
+```
+
+The advisor is experimental. It is attached only when it ranks at or above the main model. Each advisor call reads the whole transcript without the cache, so the skill consults it only at a few moments.
+
+## Scripts
+
+Both are in `plugins/orchestrator/scripts/`. The skill runs them; you can also run them by hand inside a repo.
+
+- `sweep.sh`: one digest of at most about 60 lines. It shows the default branch against `origin`, each worktree (branch, ahead and behind, uncommitted files, lock and whether the lock's process is alive), local branches that `origin` does not have, open pull requests with CI state, the last 5 merged pull requests, open issues by Project Status, the size of the priorities file, and a `STALLED` list. It needs git and gh, works on macOS bash 3.2, and spends two GitHub API calls. Options: `--no-fetch`, `--no-projects`, `--priorities FILE`.
+- `spend.py`: estimates cost from Claude Code transcripts. Run it with `python3 -I`. See "Measuring".
 
 ## Recommended settings
 
@@ -24,7 +44,35 @@ These are optional. Each name is in the Claude Code docs. Nothing here is change
 - `CLAUDE_CODE_SUBAGENT_MODEL`: environment variable that sets the model for subagents that do not set their own. Set `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` as well to force it onto every subagent, which overrides the `model` field of these agents.
 - `subagentPromptCacheTtl`: setting, `"5m"` or `"1h"`. It picks how long the prompt cache holds subagent requests. The default for subagents is 5 minutes. Use `"1h"` if you often send follow-ups to a worker after a pause.
 - Turn off MCP servers and connectors you do not use. Their tool definitions load into every agent that inherits tools.
-- Measure with `/usage` (session cost and cache hit rate) and `/context` (what fills the context window).
+- Measure with `/usage` (session cost and cache hit rate) and `/context` (what fills the context window), and with `spend.py` (see "Measuring").
+
+## Measuring
+
+`spend.py` reads the transcripts in `~/.claude/projects/<folder>/` and prints an estimate in weighted units, not dollars. The weights are in one table at the top of the script. The output holds only numbers, model names, agent types, tool names and 8-character session ids.
+
+```sh
+python3 -I plugins/orchestrator/scripts/spend.py --project <repo folder> --days 10
+python3 -I plugins/orchestrator/scripts/spend.py --current
+```
+
+`--current` prints the context size and the cost so far of the session that runs it (from `CLAUDE_CODE_SESSION_ID`), or of the newest session of the project. It also prints `HANDOFF: yes` near 120,000 tokens of context, which is when the orchestrator hands off to a fresh session.
+
+Baseline before version 2.8.0, from 10 days of real sessions in one project:
+
+| Measure | Value |
+|---|---|
+| Subagent share of cost | 57% |
+| Subagents on `general-purpose` or `Explore` with Opus | 197 of 264 |
+| Subagents of type `orchestrator:worker` or `orchestrator:scout` | 12 of 264 |
+| Tool calls of the five costliest workers | 354 to 532 each |
+| Main-thread cost from turns over 150k tokens of context | 66% |
+| Orchestrator context per turn | median 180k, max 347k |
+| Context at the first turn | 70k to 80k |
+| Main-thread cost from cache misses after idle gaps | 2.6% |
+
+To compare, run the same command on sessions that started after the update, with `--days` set so that only those sessions count. Look for a lower subagent share, more subagents on Sonnet and Haiku, fewer tool calls per subagent, and a lower median context per turn. These are real sessions, not scripted runs, so compare weeks of similar work.
+
+Advisor tokens also show in `/usage`. The transcript records each advisor call as an `advisor_message` entry in `usage.iterations`, with its own model and token counts, outside the top-level usage numbers. `spend.py` counts those entries at the advisor model's weight and shows them as `<model> (advisor)`. If a later Claude Code version stops writing these entries, `spend.py` cannot see the advisor; then trust `/usage`.
 
 ## Install
 
