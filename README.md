@@ -36,6 +36,7 @@ Both are in `plugins/orchestrator/scripts/`. The skill runs them; you can also r
 
 - `sweep.sh`: one digest of at most about 60 lines. It shows the default branch against `origin`, each worktree (branch, ahead and behind, uncommitted files, lock and whether the lock's process is alive), local branches that `origin` does not have, open pull requests with CI state, the last 5 merged pull requests, open issues by Project Status, the size of the priorities file, and a `STALLED` list. It needs git and gh, works on macOS bash 3.2, and spends two GitHub API calls. Options: `--no-fetch`, `--no-projects`, `--priorities FILE`.
 - `spend.py`: estimates cost from Claude Code transcripts. Run it with `python3 -I`. See "Measuring".
+- `score.py`: scores each subagent run into a SQLite ledger. See "Scoring workers". `transcripts.py` holds the transcript parsing that `spend.py` and `score.py` share.
 
 ## Recommended settings
 
@@ -48,7 +49,7 @@ These are optional. Each name is in the Claude Code docs. Nothing here is change
 
 ## Measuring
 
-`spend.py` reads the transcripts in `~/.claude/projects/<folder>/` and prints an estimate in weighted units, not dollars. The weights are in one table at the top of the script. The output holds only numbers, model names, agent types, tool names and 8-character session ids.
+`spend.py` reads the transcripts in `~/.claude/projects/<folder>/` and prints an estimate in weighted units, not dollars. The weights are in the tables at the top of `transcripts.py`. The output holds only numbers, model names, agent types, tool names and 8-character session ids.
 
 ```sh
 python3 -I plugins/orchestrator/scripts/spend.py --project <repo folder> --days 10
@@ -56,6 +57,25 @@ python3 -I plugins/orchestrator/scripts/spend.py --current
 ```
 
 `--current` prints the context size and the cost so far of the session that runs it (from `CLAUDE_CODE_SESSION_ID`), or of the newest session of the project. It also prints `HANDOFF: yes` near 120,000 tokens of context, which is when the orchestrator hands off to a fresh session.
+
+### Scoring workers
+
+`score.py` scores every subagent run from the same transcripts and keeps one row per run in a SQLite file, `~/.claude/orchestrator-ledger/ledger.db` by default. The key is the session id and the agent id, so a second scan adds no duplicate. The rows hold ids, model names, agent types, counts, branch names, PR numbers and times. They hold no transcript text. No command makes a network call.
+
+```sh
+python3 -I plugins/orchestrator/scripts/score.py scan --project <repo folder> [--days 14]
+python3 -I plugins/orchestrator/scripts/score.py report [--weeks 4]
+```
+
+`scan` without `--days` reads every transcript. `report` lists the failure kinds by total cost, the cost per pull request and the top runs. A run can fail in these ways. The limits are constants at the top of `score.py`.
+
+- `no_model`: the Agent call did not set `model`. When the parent transcript does not show the call, `model_set` is NULL and the run is not failed.
+- `over_calls`: more than 60 tool calls.
+- `gate_gave_up`: the finish gate let the run stop after 3 blocked stops.
+- `no_commit` and `no_pr`: a code worker (`orchestrator:worker`, or `general-purpose` with Edit or Write calls) made no successful `git commit`, or no `gh pr create` that printed a pull request URL. Read-only runs are never failed for these.
+- `big_context`: peak context above 150,000 tokens.
+
+Policy guard denials are counted in the row and are never a failure. Hook events are found by their fixed texts in the transcript (one table in `score.py`). A commit counts when its Bash call did not fail and did not report "nothing to commit". Tests: `cd plugins/orchestrator/scripts && python3 -m unittest`.
 
 Baseline before version 2.8.0, from 10 days of real sessions in one project:
 
