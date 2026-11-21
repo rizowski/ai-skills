@@ -255,6 +255,13 @@ class ScoreTest(unittest.TestCase):
         r = self.scan([self.denied_worker()])["a1"]
         self.assertEqual(r["denials"], 1)
 
+    def test_run_before_the_log_starts_with_an_event_uses_the_log(self):
+        self.write_log(self.event("deny", time="2026-11-21T00:00:00Z", rule="git-push"),
+                       self.event("deny", time="2026-11-21T00:00:01Z", rule="git-push"))
+        r = self.scan([self.denied_worker()])["a1"]  # starts before the first line; text shows 1
+        self.assertEqual(r["denials"], 2)
+        self.assertEqual(self.denials(), {"git-push": 2})
+
     def test_no_double_count(self):
         self.write_log(self.event("deny", rule="git-push"))
         r = self.scan([self.denied_worker()])["a1"]  # the transcript text and the log both show it

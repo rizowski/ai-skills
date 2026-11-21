@@ -279,12 +279,14 @@ def launch_models(proj, sid):
 
 
 def apply_hook_log(ev, session_id, agent_id, log):
-    """Set the hook counts of one run. A run that started at or after the first line of the
-    log takes its counts from the log only. Any other run keeps its text-match counts."""
+    """Set the hook counts of one run. A run takes its counts from the log only when the log
+    holds an event for it, or when it started at or after the first line of the log. Any
+    other run keeps its text-match counts."""
     log_start, events = log
     start = parse_time(ev["start"])
     by_rule = {UNKNOWN_RULE: ev["denials"]} if ev["denials"] else {}
-    if log_start is not None and start is not None and start >= log_start:
+    in_log = (session_id, agent_id) in events
+    if in_log or (log_start is not None and start is not None and start >= log_start):
         c = events.get((session_id, agent_id), collections.Counter())
         by_rule = {k[len("deny:"):]: n for k, n in c.items() if k.startswith("deny:")}
         ev = dict(ev, gate_blocks=c["gate_block"], gate_giveups=c["gate_giveup"])
