@@ -99,6 +99,55 @@ class InputTest(unittest.TestCase):
         self.assertIn("first %d shown" % judge.MAX_FILES, text)
 
 
+class RulesTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = tmp.name
+        self.put(".claude/skills/alpha/SKILL.md", "---\nname: alpha\ndescription: Does the alpha thing\n---\n# body head\n")
+        self.put(".claude/skills/beta/SKILL.md", "---\nname: beta\ndescription: \"Does beta\"\n---\n")
+        self.put("CLAUDE.md", "# Root rules\ntext\n## Tools\n")
+        self.put("core/CLAUDE.md", "# Core rules\n")
+        self.put("node_modules/CLAUDE.md", "# Skipped\n")
+        self.put(".git/CLAUDE.md", "# Skipped git\n")
+        self.put("a/b/c/CLAUDE.md", "# Too deep\n")
+
+    def put(self, rel, text):
+        path = os.path.join(self.repo, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(text)
+
+    def test_summary(self):
+        text = judge.rules_summary(self.repo)
+        self.assertIn("skill alpha: Does the alpha thing", text)
+        self.assertIn("skill beta: Does beta", text)
+        self.assertIn("CLAUDE.md: # Root rules | ## Tools", text)
+        self.assertIn(os.path.join("core", "CLAUDE.md") + ": # Core rules", text)
+        for gone in ("Skipped", "Too deep", "body head"):
+            self.assertNotIn(gone, text)
+        self.assertNotIn("cut to", text)
+
+    def test_cap(self):
+        self.put("CLAUDE.md", "# " + "h" * (judge.RULES_CAP + 100) + "\n")
+        text = judge.rules_summary(self.repo)
+        self.assertIn("summary cut to the first %d characters" % judge.RULES_CAP, text)
+        self.assertLess(len(text), judge.RULES_CAP + 100)
+
+    def test_missing_folder(self):
+        self.assertEqual(judge.rules_summary(os.path.join(self.repo, "nope")), "")
+        self.assertEqual(judge.rules_summary(None), "")
+        text = judge.build_input(row(1), BRIEF, REPORT, {})
+        self.assertIn("repository rules: not available", text)
+
+    def test_input_label_and_question(self):
+        text = judge.build_input(row(1), BRIEF, REPORT, {}, judge.rules_summary(self.repo))
+        self.assertIn("REPOSITORY RULES (summary):", text)
+        self.assertIn("skill alpha", text)
+        self.assertNotIn("not available", text)
+        self.assertIn("unknown when it says the rules are not available", judge.SYSTEM_PROMPT)
+
+
 class TranscriptTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -195,6 +244,14 @@ class FlowTest(unittest.TestCase):
         db.upsert(row(2, session_id=SID, agent_id="a2", ended_at=now))
         db.close()
         TranscriptTest.make(mock.Mock(proj=self.proj))
+        self.repo = os.path.join(self.root, "repo")
+        os.makedirs(os.path.join(self.repo, ".claude", "skills", "zeta"))
+        with open(os.path.join(self.repo, ".claude", "skills", "zeta", "SKILL.md"), "w") as fh:
+            fh.write("---\nname: zeta\ndescription: ZETASUMMARY\n---\n")
+        with open(os.path.join(self.proj, SID + ".jsonl")) as fh:
+            old = fh.read()
+        with open(os.path.join(self.proj, SID + ".jsonl"), "w") as fh:
+            fh.write(dumps(dict(type="user", cwd=self.repo)) + "\n" + old)
 
     def run_judge(self, call, **kw):
         lines = []
@@ -220,10 +277,17 @@ class FlowTest(unittest.TestCase):
         db.close()
         with open(self.ledger, "rb") as fh:
             data = fh.read()
-        for marker in (BRIEF, REPORT, REASON):
+        for marker in (BRIEF, REPORT, REASON, "ZETASUMMARY"):
             self.assertNotIn(marker.encode(), data)
         with open(judge.reasons_path(self.ledger)) as fh:
+            self.assertNotIn("ZETASUMMARY", fh.read())
+        with open(judge.reasons_path(self.ledger)) as fh:
             self.assertIn(REASON, fh.read())
+
+    def test_summary_reaches_the_call_only(self):
+        seen = []
+        self.run_judge(lambda t: seen.append(t) or good_answer())
+        self.assertIn("ZETASUMMARY", seen[0])
 
     def test_judged_run_is_not_judged_again(self):
         self.run_judge(lambda t: good_answer())
