@@ -65,9 +65,10 @@ python3 -I plugins/orchestrator/scripts/spend.py --current
 ```sh
 python3 -I plugins/orchestrator/scripts/score.py scan --project <repo folder> [--days 14]
 python3 -I plugins/orchestrator/scripts/score.py report [--weeks 4]
+python3 -I plugins/orchestrator/scripts/score.py pr-cost --repo <owner/name>
 ```
 
-`scan` without `--days` reads every transcript. `report` lists the failure kinds by total cost, the cost per pull request and the top runs. A run can fail in these ways. The limits are constants at the top of `score.py`.
+`scan` without `--days` reads every transcript. `report` lists the failure kinds by total cost, the policy guard denials by rule, the runs and cost by model (with the share of runs that have a failure), the cost per pull request and the top runs. `pr-cost` prints one line per pull request of a repository. `sweep.sh` uses it to print the cost per merged pull request from the ledger, with no GitHub call, and prints "not read" when the ledger is missing. A run can fail in these ways. The limits are constants at the top of `score.py`.
 
 - `no_model`: the Agent call did not set `model`. When the parent transcript does not show the call, `model_set` is NULL and the run is not failed.
 - `over_calls`: more than 60 tool calls.
@@ -75,7 +76,7 @@ python3 -I plugins/orchestrator/scripts/score.py report [--weeks 4]
 - `no_commit` and `no_pr`: a code worker (`orchestrator:worker`, or `general-purpose` with Edit or Write calls) made no successful `git commit`, or no `gh pr create` that printed a pull request URL. Read-only runs are never failed for these.
 - `big_context`: peak context above 150,000 tokens.
 
-Policy guard denials are counted in the row and are never a failure. Hook events are found by their fixed texts in the transcript (one table in `score.py`). A commit counts when its Bash call did not fail and did not report "nothing to commit". Tests: `cd plugins/orchestrator/scripts && python3 -m unittest`.
+Policy guard denials are counted in the row and are never a failure. Hook events come from the hook event log (`~/.claude/hook-events/events.jsonl`, or `$CLAUDE_HOOKS_LOG_DIR/events.jsonl`), joined on the session id and the agent id. A run that started at or after the first line of the log uses only the log. Any older run uses only the fixed texts in the transcript (one table in `score.py`). The two are never added. A missing or empty log means the text match for every run, and a broken line is skipped. The ledger keeps denials per rule in the `run_denials` table. A commit counts when its Bash call did not fail and did not report "nothing to commit". Tests: `cd plugins/orchestrator/scripts && python3 -m unittest`.
 
 Baseline before version 2.8.0, from 10 days of real sessions in one project:
 

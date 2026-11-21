@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -96,6 +97,11 @@ class ScoreTest(unittest.TestCase):
         self.proj = os.path.join(self.projects, "-fixture-project")
         os.makedirs(self.proj)
         self.ledger = os.path.join(self.root, "ledger.db")
+        self.hooks = os.path.join(self.root, "hooks")
+        os.makedirs(self.hooks)
+        env = mock.patch.dict(os.environ, {"CLAUDE_HOOKS_LOG_DIR": self.hooks})
+        env.start()
+        self.addCleanup(env.stop)
         old = transcripts.PROJECTS
         transcripts.PROJECTS = self.projects
         self.addCleanup(setattr, transcripts, "PROJECTS", old)
@@ -221,6 +227,93 @@ class ScoreTest(unittest.TestCase):
         text = "\n".join(out)
         self.assertNotIn(SECRET, text)
         self.assertIn("owner/repo#42", text)
+
+    # Hook event log. Fixture runs start at 2026-11-20T10:01:00Z.
+
+    def write_log(self, *lines):
+        with open(os.path.join(self.hooks, "events.jsonl"), "w") as fh:
+            fh.write("\n".join(l if isinstance(l, str) else dumps(l) for l in lines) + "\n")
+
+    def event(self, kind="deny", aid="a1", time="2026-11-20T09:00:00.000Z", **kw):
+        hook = "policy-guard" if kind == "deny" else "finish-gate"
+        return dict(time=time, hook=hook, kind=kind, session_id=SID, agent_id=aid, agent_type="x", **kw)
+
+    def denied_worker(self, aid="a1"):
+        a = good_worker(aid)
+        a.tool("Bash", {"command": "git push"}, "PreToolUse:Bash hook error: Workers may not run or change x", True)
+        return a
+
+    def test_log_is_used_for_a_run_after_the_log_starts(self):
+        self.write_log(self.event("deny", tool="Bash", rule="git-push"), self.event("deny", tool="Bash", rule="git-push"),
+                       self.event("deny", tool="Edit", rule="protected-file"), self.event("block", failed="x", blocks=1),
+                       self.event("give_up", failed="x"))
+        r = self.scan([good_worker("a1")])["a1"]  # no text in the transcript at all
+        self.assertEqual((r["denials"], r["gate_blocks"], r["gate_giveups"]), (3, 1, 1))
+
+    def test_text_match_is_used_for_a_run_before_the_log_starts(self):
+        self.write_log(self.event("deny", time="2026-11-21T00:00:00Z", rule="git-push"))
+        r = self.scan([self.denied_worker()])["a1"]
+        self.assertEqual(r["denials"], 1)
+
+    def test_no_double_count(self):
+        self.write_log(self.event("deny", rule="git-push"))
+        r = self.scan([self.denied_worker()])["a1"]  # the transcript text and the log both show it
+        self.assertEqual(r["denials"], 1)
+        self.assertEqual(self.denials(), {"git-push": 1})
+
+    def test_missing_or_empty_log_uses_text_match(self):
+        self.assertEqual(self.scan([self.denied_worker()])["a1"]["denials"], 1)
+        self.write_log()
+        self.assertEqual(self.scan([self.denied_worker()])["a1"]["denials"], 1)
+        self.assertEqual(self.denials(), {"unknown": 1})
+
+    def test_broken_log_line_is_skipped(self):
+        self.write_log("{not json", "[1, 2]", '{"time": "bad", "hook": "policy-guard", "kind": "deny"}',
+                       self.event("deny", rule="git-push"))
+        r = self.scan([good_worker("a1")])["a1"]
+        self.assertEqual(r["denials"], 1)
+
+    def test_event_with_null_ids_is_ignored(self):
+        e = self.event("deny", rule="git-push")
+        e["agent_id"] = None
+        self.write_log(e)
+        self.assertEqual(self.scan([good_worker("a1")])["a1"]["denials"], 0)
+
+    def denials(self):
+        db = score.Ledger(self.ledger)
+        out = db.denials_since("")
+        db.close()
+        return out
+
+    def test_denials_by_rule_in_ledger_and_report(self):
+        self.write_log(self.event("deny", rule="git-push"), self.event("deny", rule="git-push"),
+                       self.event("deny", rule="protected-file"))
+        self.scan([good_worker("a1")])
+        self.assertEqual(self.denials(), {"git-push": 2, "protected-file": 1})
+        out = []
+        score.report(4, self.ledger, out=out.append)
+        text = "\n".join(out)
+        self.assertIn("DENIALS BY RULE", text)
+        self.assertRegex(text, r"git-push\s+2")
+
+    def test_by_model_section(self):
+        bad = Agent("a2", model="claude-opus-5-5")
+        bad.tool("Edit", {"file_path": "/x"})  # code worker with no commit
+        rows = self.scan([good_worker("a1"), good_worker("a3"), bad])
+        self.assertEqual(len(rows), 3)
+        out = []
+        score.report(4, self.ledger, out=out.append)
+        text = "\n".join(out)
+        self.assertIn("BY MODEL", text)
+        self.assertRegex(text, r"claude-sonnet-5-5\s+2\s+\d+\s+0%")
+        self.assertRegex(text, r"claude-opus-5-5\s+1\s+\d+\s+100%")
+
+    def test_pr_costs(self):
+        self.scan([good_worker("a1"), good_worker("a2")])
+        db = score.Ledger(self.ledger)
+        (number, runs, cost), = db.pr_costs("owner/repo")
+        db.close()
+        self.assertEqual((number, runs), (42, 2))
 
 
 if __name__ == "__main__":
