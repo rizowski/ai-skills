@@ -17,6 +17,8 @@ $CLAUDE_HOOKS_LOG_DIR/events.jsonl) for a run that started at or after the first
 line of the log. Older runs, and every run when the log is missing or empty, use
 the fixed texts in the transcript. The two are never added.
 
+judge.py adds two tables (judge_labels, judge_checks) and `report` shows them as JUDGE LABELS.
+
 The ledger holds ids, model names, agent types, counts, branch names, PR numbers
 and times. It never holds transcript text. No network call is made.
 """
@@ -88,6 +90,12 @@ class Ledger:
         self.db.execute("CREATE TABLE IF NOT EXISTS runs (%s, PRIMARY KEY (session_id, agent_id))" % cols)
         self.db.execute("CREATE TABLE IF NOT EXISTS run_denials (session_id TEXT NOT NULL, agent_id TEXT NOT NULL, "
                         "rule TEXT NOT NULL, count INTEGER, PRIMARY KEY (session_id, agent_id, rule))")
+        # Written by judge.py. Answers are yes, no or unknown. Reasons never come here.
+        self.db.execute("CREATE TABLE IF NOT EXISTS judge_labels (session_id TEXT NOT NULL, agent_id TEXT NOT NULL, "
+                        "label TEXT NOT NULL, answer TEXT NOT NULL, judge_model TEXT, judged_at TEXT, "
+                        "PRIMARY KEY (session_id, agent_id, label))")
+        self.db.execute("CREATE TABLE IF NOT EXISTS judge_checks (session_id TEXT NOT NULL, agent_id TEXT NOT NULL, "
+                        "verdict TEXT NOT NULL, checked_at TEXT, PRIMARY KEY (session_id, agent_id))")
 
     def upsert(self, row):
         self.db.execute("INSERT OR REPLACE INTO runs (%s) VALUES (%s)" % (
@@ -116,6 +124,54 @@ class Ledger:
     def runs_since(self, iso):
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM runs WHERE ended_at >= ? ORDER BY ended_at", (iso,))]
+
+    def run(self, session_id, agent_id):
+        r = self.db.execute("SELECT * FROM runs WHERE session_id = ? AND agent_id = ?", (session_id, agent_id)).fetchone()
+        return dict(r) if r else None
+
+    def judged_ids(self):
+        """Set of (session id, agent id) that have judge labels."""
+        return {(r[0], r[1]) for r in self.db.execute("SELECT DISTINCT session_id, agent_id FROM judge_labels")}
+
+    def set_labels(self, session_id, agent_id, answers, judge_model, judged_at):
+        """Replace the labels of one run. answers: label -> yes | no | unknown."""
+        self.db.execute("DELETE FROM judge_labels WHERE session_id = ? AND agent_id = ?", (session_id, agent_id))
+        self.db.executemany("INSERT INTO judge_labels VALUES (?, ?, ?, ?, ?, ?)",
+                            [(session_id, agent_id, k, v, judge_model, judged_at) for k, v in answers.items()])
+        self.db.commit()
+
+    def labels_of(self, session_id, agent_id):
+        return {r[0]: r[1] for r in self.db.execute(
+            "SELECT label, answer FROM judge_labels WHERE session_id = ? AND agent_id = ?", (session_id, agent_id))}
+
+    def set_check(self, session_id, agent_id, verdict, checked_at):
+        self.db.execute("INSERT OR REPLACE INTO judge_checks VALUES (?, ?, ?, ?)",
+                        (session_id, agent_id, verdict, checked_at))
+        self.db.commit()
+
+    def judged_runs(self):
+        """Judged runs, newest first, each with its check verdict or None."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT r.*, (SELECT MAX(judged_at) FROM judge_labels l WHERE l.session_id = r.session_id AND "
+            "l.agent_id = r.agent_id) AS judged_at, (SELECT verdict FROM judge_checks c WHERE "
+            "c.session_id = r.session_id AND c.agent_id = r.agent_id) AS verdict FROM runs r WHERE EXISTS "
+            "(SELECT 1 FROM judge_labels l WHERE l.session_id = r.session_id AND l.agent_id = r.agent_id) "
+            "ORDER BY judged_at DESC")]
+
+    def label_counts_since(self, iso):
+        """label -> {answer: count}, for runs that ended at or after iso."""
+        out = collections.defaultdict(collections.Counter)
+        for label, answer, n in self.db.execute(
+                "SELECT l.label, l.answer, COUNT(*) FROM judge_labels l JOIN runs r USING (session_id, agent_id) "
+                "WHERE r.ended_at >= ? GROUP BY l.label, l.answer", (iso,)):
+            out[label][answer] = n
+        return out
+
+    def check_counts_since(self, iso):
+        """Counter of verdicts (right, wrong) for runs that ended at or after iso."""
+        return collections.Counter(dict(self.db.execute(
+            "SELECT c.verdict, COUNT(*) FROM judge_checks c JOIN runs r USING (session_id, agent_id) "
+            "WHERE r.ended_at >= ? GROUP BY c.verdict", (iso,))))
 
     def close(self):
         self.db.close()
@@ -252,9 +308,9 @@ def run_events(path):
     return ev
 
 
-def launch_models(proj, sid):
-    """Map agent id -> was `model` given on the Agent call that started it, for one session."""
-    given = {}  # tool use id -> bool
+def launch_inputs(proj, sid):
+    """Map agent id -> the input of the Agent call that started it, for one session."""
+    given = {}  # tool use id -> input dict
     started = {}  # tool use id -> agent id
     files = [os.path.join(proj, sid + ".jsonl")] + subagent_files(proj, sid)
     for f in files:
@@ -270,12 +326,17 @@ def launch_models(proj, sid):
                     continue
                 for b in blocks(rec, "tool_use"):
                     if b.get("name") in AGENT_TOOLS:
-                        given[b.get("id")] = bool((b.get("input") or {}).get("model"))
+                        given[b.get("id")] = b.get("input") or {}
                 res = rec.get("toolUseResult")
                 if isinstance(res, dict) and res.get("agentId"):
                     for b in blocks(rec, "tool_result"):
                         started[b.get("tool_use_id")] = res["agentId"]
     return {aid: given[tid] for tid, aid in started.items() if tid in given}
+
+
+def launch_models(proj, sid):
+    """Map agent id -> was `model` given on the Agent call that started it, for one session."""
+    return {aid: bool(inp.get("model")) for aid, inp in launch_inputs(proj, sid).items()}
 
 
 def apply_hook_log(ev, session_id, agent_id, log):
@@ -347,11 +408,25 @@ def scan(project_arg, days, ledger_path):
     print("scanned %d runs, model_set unknown for %d, ledger %s" % (total, unknown, ledger_path))
 
 
+JUDGE_LABELS = ["brief_unclear", "off_brief", "unsupported_claim", "redundant_tests", "ignored_rule", "scope_grew"]
+
+
+def judge_section(out, labels, checks):
+    """Counts of the model labels written by judge.py. Evidence only; nothing blocks on them."""
+    out("\nJUDGE LABELS (yes, no, unknown) - a small model's opinion, evidence only")
+    for k in JUDGE_LABELS:
+        c = labels.get(k, {})
+        out("  %-18s %5d %5d %5d" % (k, c.get("yes", 0), c.get("no", 0), c.get("unknown", 0)))
+    done = checks["right"] + checks["wrong"]
+    out("  checked by a person: %d, marked right: %s" % (done, "%d%%" % round(100.0 * checks["right"] / done) if done else "-"))
+
+
 def report(weeks, ledger_path, out=print):
     ledger = Ledger(ledger_path)
     since = (datetime.now(timezone.utc) - timedelta(weeks=weeks)).strftime("%Y-%m-%dT%H:%M:%S")
     rows = ledger.runs_since(since)
     denials = ledger.denials_since(since)
+    labels, checks = ledger.label_counts_since(since), ledger.check_counts_since(since)
     ledger.close()
     out("Last %d weeks: %d runs, cost %d weighted units (estimate)" % (weeks, len(rows), sum(r["cost"] for r in rows)))
     kinds = {k: [0, 0.0] for k in FAILURE_KINDS}
@@ -386,6 +461,7 @@ def report(weeks, ledger_path, out=print):
             p[1] += r["cost"]
     for k, (n, c) in sorted(prs.items(), key=lambda kv: -kv[1][1])[:10]:
         out("  %-40s %3d %12d" % (k, n, c))
+    judge_section(out, labels, checks)
     out("\nTOP RUNS (session agent type model calls peak-ctx cost branch failures)")
     for r in sorted(rows, key=lambda r: -r["cost"])[:10]:
         bad = ",".join(k for k, v in failures(r).items() if v) or "-"
