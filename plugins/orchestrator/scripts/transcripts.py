@@ -182,6 +182,24 @@ def project_dir(arg):
     sys.exit("No transcripts found for %s under %s" % (path, PROJECTS))
 
 
+def session_cwd(proj, sid):
+    """The working folder that a session recorded in its transcript, or None."""
+    try:
+        with open(os.path.join(proj, sid + ".jsonl")) as fh:
+            for i, line in enumerate(fh):
+                if i >= 50:
+                    break
+                try:
+                    cwd = json.loads(line).get("cwd")
+                except (ValueError, AttributeError):
+                    continue
+                if isinstance(cwd, str) and cwd:
+                    return cwd
+    except OSError:
+        pass
+    return None
+
+
 def subagent_files(proj, sid):
     return sorted(glob.glob(os.path.join(proj, sid, "subagents", "**", "agent-*.jsonl"), recursive=True))
 
