@@ -50,14 +50,15 @@ These are optional. Each name is in the Claude Code docs. Nothing here is change
 
 ## Measuring
 
-`spend.py` reads the transcripts in `~/.claude/projects/<folder>/` and prints an estimate in weighted units, not dollars. The weights are in the tables at the top of `transcripts.py`. The output holds only numbers, model names, agent types, tool names and 8-character session ids.
+`spend.py` reads the transcripts in `~/.claude/projects/<folder>/` and prints an estimate in weighted units, not dollars. The weights are in the tables at the top of `transcripts.py`. The output holds only numbers, model names, agent types, tool names and 8-character session ids. The `spend_sessions` rows that `--current` records also hold the full session id and the name of the project folder.
 
 ```sh
 python3 -I plugins/orchestrator/scripts/spend.py --project <repo folder> --days 10
 python3 -I plugins/orchestrator/scripts/spend.py --current
+python3 -I plugins/orchestrator/scripts/spend.py --trend --weeks 8
 ```
 
-`--current` prints the context size and the cost so far of the session that runs it (from `CLAUDE_CODE_SESSION_ID`), or of the newest session of the project. It also prints `HANDOFF: yes` near 120,000 tokens of context, which is when the orchestrator hands off to a fresh session.
+`--current` shows where the spend of the session that runs it goes (from `CLAUDE_CODE_SESSION_ID`, or the newest session of the project): the starting and current context, tokens and weighted cost by kind (input, cache read, cache write 5m and 1h, output), the cache hit rate, and the advisor and subagent cost. It ends with a one-line `SPEND:` summary and writes one row per session to the `spend_sessions` table of the score.py ledger (`--ledger FILE` to change it). `--trend` prints one line per week from those rows. The orchestrator does not hand off at a context size; a fresh session would re-write its whole starting load to the cache at 1.25x, while a cached read costs 0.1x.
 
 ### Scoring workers
 
