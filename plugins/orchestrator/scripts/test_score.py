@@ -323,5 +323,107 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual((number, runs), (42, 2))
 
 
+class StatsTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.ledger = os.path.join(tmp.name, "ledger.db")
+
+    def local_iso(self, day, hour=0):
+        """An ISO time in UTC for a local date and hour."""
+        t = score.local_midnight(day) + score.timedelta(hours=hour)
+        return t.astimezone(score.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    def add(self, aid, day, hour=0, project="p", **kw):
+        row = dict(session_id="s", agent_id=aid, agent_type="orchestrator:worker", model="m", model_set=1,
+                   tool_calls=1, gate_blocks=0, gate_giveups=0, denials=0, code_worker=1, ended_with_commit=1,
+                   ended_with_pr=1, peak_context=1, cost=100.0, project=project,
+                   started_at=self.local_iso(day, hour), ended_at=self.local_iso(day, hour))
+        row.update(kw)
+        db = score.Ledger(self.ledger)
+        db.upsert(row)
+        db.close()
+
+    def stats(self, start="2026-11-01", end="2026-11-28", project=None):
+        return score.stats(start, end, self.ledger, project)
+
+    def test_shape_and_every_failure_kind_with_zero(self):
+        self.add("a1", "2026-11-05")
+        out = self.stats()
+        self.assertEqual(list(out), ["schema", "from", "to", "runs", "code_runs", "cost", "failures", "judge", "denials"])
+        self.assertEqual((out["schema"], out["from"], out["to"]), (1, "2026-11-01", "2026-11-28"))
+        self.assertEqual((out["runs"], out["code_runs"], out["cost"]), (1, 1, 100))
+        self.assertEqual(list(out["failures"]), score.FAILURE_KINDS)
+        self.assertTrue(all(v == {"runs": 0, "cost": 0} for v in out["failures"].values()))
+        self.assertEqual((out["judge"], out["denials"]), ({}, {}))
+        json.dumps(out)
+
+    def test_range_edges(self):
+        self.add("from", "2026-11-01")
+        self.add("to", "2026-11-28")
+        self.add("before", "2026-10-31", hour=23)
+        self.add("last", "2026-11-27", hour=23)
+        self.assertEqual(self.stats()["runs"], 2)
+
+    def test_failure_runs_and_cost(self):
+        self.add("a1", "2026-11-05", model_set=0, cost=40.0)
+        self.add("a2", "2026-11-06", ended_with_pr=0, code_worker=0, cost=60.0)
+        out = self.stats()
+        self.assertEqual(out["failures"]["no_model"], {"runs": 1, "cost": 40})
+        self.assertEqual(out["failures"]["no_pr"], {"runs": 0, "cost": 0})
+        self.assertEqual((out["runs"], out["code_runs"], out["cost"]), (2, 1, 100))
+
+    def test_judge_and_denials_follow_the_range(self):
+        self.add("in", "2026-11-05")
+        self.add("out", "2026-12-05")
+        db = score.Ledger(self.ledger)
+        for aid in ("in", "out"):
+            db.set_labels("s", aid, {"off_brief": "yes", "scope_grew": "no"}, "haiku", "x")
+            db.set_denials("s", aid, {"git-push": 2})
+        db.close()
+        out = self.stats()
+        self.assertEqual(out["judge"], {"off_brief": {"yes": 1, "no": 0, "unknown": 0},
+                                        "scope_grew": {"yes": 0, "no": 1, "unknown": 0}})
+        self.assertEqual(out["denials"], {"git-push": 2})
+
+    def test_project_filter(self):
+        self.add("a1", "2026-11-05", project="one")
+        self.add("a2", "2026-11-05", project="two")
+        self.assertEqual(self.stats(project="one")["runs"], 1)
+        self.assertEqual(self.stats()["runs"], 2)
+        self.assertEqual(self.stats(project="none")["runs"], 0)
+
+    def test_empty_range(self):
+        self.add("a1", "2026-11-05")
+        out = self.stats("2026-01-01", "2026-01-02")
+        self.assertEqual((out["runs"], out["code_runs"], out["cost"]), (0, 0, 0))
+
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        code = 0
+        with mock.patch.object(sys, "argv", ["score.py", *argv]), mock.patch.object(sys, "stdout", out), \
+                mock.patch.object(sys, "stderr", err):
+            try:
+                score.main()
+            except SystemExit as e:
+                code = 1 if isinstance(e.code, str) else (e.code or 0)
+                if isinstance(e.code, str):
+                    err.write(e.code + "\n")
+        return code, out.getvalue(), err.getvalue()
+
+    def test_cli_prints_one_json_object(self):
+        self.add("a1", "2026-11-05")
+        code, out, err = self.run_cli("stats", "--from", "2026-11-01", "--to", "2026-11-28", "--ledger", self.ledger)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["runs"], 1)
+        self.assertEqual(out.count("\n"), 1)
+
+    def test_missing_ledger_is_an_error(self):
+        code, out, err = self.run_cli("stats", "--from", "2026-11-01", "--to", "2026-11-28",
+                                      "--ledger", self.ledger + ".missing")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(len(err.strip().splitlines()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

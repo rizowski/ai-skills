@@ -173,6 +173,21 @@ class Ledger:
             "SELECT c.verdict, COUNT(*) FROM judge_checks c JOIN runs r USING (session_id, agent_id) "
             "WHERE r.ended_at >= ? GROUP BY c.verdict", (iso,))))
 
+    def all_runs(self, project=None):
+        """Every run, or the runs of one project name."""
+        sql, args = "SELECT * FROM runs", ()
+        if project is not None:
+            sql, args = sql + " WHERE project = ?", (project,)
+        return [dict(r) for r in self.db.execute(sql, args)]
+
+    def all_labels(self):
+        """(session id, agent id, label, answer) of every judge label."""
+        return [tuple(r) for r in self.db.execute("SELECT session_id, agent_id, label, answer FROM judge_labels")]
+
+    def all_denials(self):
+        """(session id, agent id, rule, count) of every denial count."""
+        return [tuple(r) for r in self.db.execute("SELECT session_id, agent_id, rule, count FROM run_denials")]
+
     def close(self):
         self.db.close()
 
@@ -381,6 +396,17 @@ def failures(row):
     }
 
 
+def failure_totals(rows):
+    """Failure kind -> [runs, total cost], with every kind present."""
+    kinds = {k: [0, 0.0] for k in FAILURE_KINDS}
+    for r in rows:
+        for k, bad in failures(r).items():
+            if bad:
+                kinds[k][0] += 1
+                kinds[k][1] += r["cost"]
+    return kinds
+
+
 def scan(project_arg, days, ledger_path):
     proj = project_dir(project_arg)
     cutoff = time.time() - days * 86400 if days else 0
@@ -429,12 +455,7 @@ def report(weeks, ledger_path, out=print):
     labels, checks = ledger.label_counts_since(since), ledger.check_counts_since(since)
     ledger.close()
     out("Last %d weeks: %d runs, cost %d weighted units (estimate)" % (weeks, len(rows), sum(r["cost"] for r in rows)))
-    kinds = {k: [0, 0.0] for k in FAILURE_KINDS}
-    for r in rows:
-        for k, bad in failures(r).items():
-            if bad:
-                kinds[k][0] += 1
-                kinds[k][1] += r["cost"]
+    kinds = failure_totals(rows)
     out("\nFAILURE KINDS (count, total cost)")
     for k, (n, c) in sorted(kinds.items(), key=lambda kv: -kv[1][1]):
         out("  %-13s %5d %12d" % (k, n, c))
@@ -469,6 +490,45 @@ def report(weeks, ledger_path, out=print):
                                               r["tool_calls"], r["peak_context"], r["cost"], r["branch"] or "-", bad))
 
 
+STATS_SCHEMA = 1
+
+
+def local_midnight(text):
+    """A YYYY-MM-DD date as an aware datetime at local midnight."""
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").astimezone()
+    except ValueError:
+        sys.exit("Not a date (use YYYY-MM-DD): %s" % text)
+
+
+def stats(start, end, ledger_path, project=None):
+    """The machine-readable report as a dict. start is inclusive, end is exclusive, both local dates."""
+    lo, hi = local_midnight(start), local_midnight(end)
+    ledger = Ledger(ledger_path)
+    rows = []
+    for r in ledger.all_runs(project):
+        t = parse_time(r["started_at"])
+        if t is not None and lo <= t < hi:
+            rows.append(r)
+    keys = {(r["session_id"], r["agent_id"]) for r in rows}
+    labels, denials = ledger.all_labels(), ledger.all_denials()
+    ledger.close()
+    judge = collections.defaultdict(lambda: {"yes": 0, "no": 0, "unknown": 0})
+    for sid, aid, label, answer in labels:
+        if (sid, aid) in keys and answer in judge[label]:
+            judge[label][answer] += 1
+    by_rule = collections.Counter()
+    for sid, aid, rule, n in denials:
+        if (sid, aid) in keys:
+            by_rule[rule] += n
+    return {
+        "schema": STATS_SCHEMA, "from": start, "to": end, "runs": len(rows),
+        "code_runs": sum(1 for r in rows if r["code_worker"]), "cost": round(sum(r["cost"] or 0 for r in rows)),
+        "failures": {k: {"runs": n, "cost": round(c)} for k, (n, c) in failure_totals(rows).items()},
+        "judge": dict(judge), "denials": dict(by_rule),
+    }
+
+
 def main():
     p = argparse.ArgumentParser(description="Score subagent runs from Claude Code transcripts.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -482,6 +542,11 @@ def main():
     c = sub.add_parser("pr-cost", help="number, runs and cost per pull request of one repository")
     c.add_argument("--repo", required=True, help="OWNER/NAME")
     c.add_argument("--ledger", default=DEFAULT_LEDGER)
+    d = sub.add_parser("stats", help="one JSON object for a date range (schema 1)")
+    d.add_argument("--from", dest="start", required=True, help="first day, YYYY-MM-DD (inclusive, local)")
+    d.add_argument("--to", dest="end", required=True, help="last day, YYYY-MM-DD (exclusive, local)")
+    d.add_argument("--project", help="project name as stored in the ledger (default: all)")
+    d.add_argument("--ledger", default=DEFAULT_LEDGER)
     args = p.parse_args()
     if args.cmd == "scan":
         scan(args.project, args.days, args.ledger)
@@ -490,6 +555,8 @@ def main():
         sys.exit("No ledger at %s. Run scan first." % args.ledger)
     if args.cmd == "report":
         report(args.weeks, args.ledger)
+    elif args.cmd == "stats":
+        print(json.dumps(stats(args.start, args.end, args.ledger, args.project)))
     else:
         ledger = Ledger(args.ledger)
         for number, runs, cost in ledger.pr_costs(args.repo):
