@@ -37,6 +37,7 @@ Both are in `plugins/orchestrator/scripts/`. The skill runs them; you can also r
 - `sweep.sh`: one digest of at most about 60 lines. It shows the default branch against `origin`, each worktree (branch, ahead and behind, uncommitted files, lock and whether the lock's process is alive), local branches that `origin` does not have, open pull requests with CI state, the last 5 merged pull requests, open issues by Project Status, the size of the priorities file, and a `STALLED` list. It needs git and gh, works on macOS bash 3.2, and spends two GitHub API calls. Options: `--no-fetch`, `--no-projects`, `--priorities FILE`.
 - `spend.py`: estimates cost from Claude Code transcripts. Run it with `python3 -I`. See "Measuring".
 - `score.py`: scores each subagent run into a SQLite ledger. See "Scoring workers". `transcripts.py` holds the transcript parsing that `spend.py` and `score.py` share.
+- `judge.py`: a small model labels the quality of a sample of runs. See "Judging quality".
 
 ## Recommended settings
 
@@ -65,9 +66,10 @@ python3 -I plugins/orchestrator/scripts/spend.py --current
 ```sh
 python3 -I plugins/orchestrator/scripts/score.py scan --project <repo folder> [--days 14]
 python3 -I plugins/orchestrator/scripts/score.py report [--weeks 4]
+python3 -I plugins/orchestrator/scripts/score.py pr-cost --repo <owner/name>
 ```
 
-`scan` without `--days` reads every transcript. `report` lists the failure kinds by total cost, the cost per pull request and the top runs. A run can fail in these ways. The limits are constants at the top of `score.py`.
+`scan` without `--days` reads every transcript. `report` lists the failure kinds by total cost, the policy guard denials by rule, the runs and cost by model (with the share of runs that have a failure), the cost per pull request and the top runs. `pr-cost` prints one line per pull request of a repository. `sweep.sh` uses it to print the cost per merged pull request from the ledger, with no GitHub call, and prints "not read" when the ledger is missing. A run can fail in these ways. The limits are constants at the top of `score.py`.
 
 - `no_model`: the Agent call did not set `model`. When the parent transcript does not show the call, `model_set` is NULL and the run is not failed.
 - `over_calls`: more than 60 tool calls.
@@ -75,7 +77,7 @@ python3 -I plugins/orchestrator/scripts/score.py report [--weeks 4]
 - `no_commit` and `no_pr`: a code worker (`orchestrator:worker`, or `general-purpose` with Edit or Write calls) made no successful `git commit`, or no `gh pr create` that printed a pull request URL. Read-only runs are never failed for these.
 - `big_context`: peak context above 150,000 tokens.
 
-Policy guard denials are counted in the row and are never a failure. Hook events are found by their fixed texts in the transcript (one table in `score.py`). A commit counts when its Bash call did not fail and did not report "nothing to commit". Tests: `cd plugins/orchestrator/scripts && python3 -m unittest`.
+Policy guard denials are counted in the row and are never a failure. Hook events come from the hook event log (`~/.claude/hook-events/events.jsonl`, or `$CLAUDE_HOOKS_LOG_DIR/events.jsonl`), joined on the session id and the agent id. A run uses only the log when the log holds an event for its session id and agent id, or when it started at or after the first line of the log. Any older run uses only the fixed texts in the transcript (one table in `score.py`). The two are never added. A missing or empty log means the text match for every run, and a broken line is skipped. The ledger keeps denials per rule in the `run_denials` table. A commit counts when its Bash call did not fail and did not report "nothing to commit". Tests: `cd plugins/orchestrator/scripts && python3 -m unittest`.
 
 Baseline before version 2.8.0, from 10 days of real sessions in one project:
 
@@ -93,6 +95,20 @@ Baseline before version 2.8.0, from 10 days of real sessions in one project:
 To compare, run the same command on sessions that started after the update, with `--days` set so that only those sessions count. Look for a lower subagent share, more subagents on Sonnet and Haiku, fewer tool calls per subagent, and a lower median context per turn. These are real sessions, not scripted runs, so compare weeks of similar work.
 
 Advisor tokens also show in `/usage`. The transcript records each advisor call as an `advisor_message` entry in `usage.iterations`, with its own model and token counts, outside the top-level usage numbers. `spend.py` counts those entries at the advisor model's weight and shows them as `<model> (advisor)`. If a later Claude Code version stops writing these entries, `spend.py` cannot see the advisor; then trust `/usage`.
+
+### Judging quality
+
+The failure kinds of `score.py` see cost and process. They do not see quality, for example a worker that ignored its brief. `judge.py` covers that gap. Its labels are evidence for a person. A label never blocks anything, and `judge.py` never opens a pull request.
+
+```sh
+python3 -I plugins/orchestrator/scripts/judge.py run --project <repo folder> [--weeks 1] [--limit N] [--dry-run]
+python3 -I plugins/orchestrator/scripts/judge.py review [--count 5]
+python3 -I plugins/orchestrator/scripts/judge.py mark <session id> <agent id> right|wrong
+```
+
+`run` picks the 10 costliest runs of code workers, up to 10 more runs with a script failure, and 5 runs with no failure as a control group. The control group is seeded with the ISO week, so a second run picks the same runs. A run that has labels is skipped. For each run it builds a small input: the brief (cut at 6000 characters), the last report (cut at 4000), the files changed by Edit and Write calls with the call count per file, and the counts from the ledger. The input says when text was cut. It never holds the whole transcript. One `claude -p` call on `haiku`, with no tools and a temp folder as the working directory, answers six questions with `yes`, `no` or `unknown`: `brief_unclear`, `off_brief`, `unsupported_claim`, `redundant_tests`, `ignored_rule` and `scope_grew`. A call that fails, times out or answers in a wrong shape stores `unknown` for all six. `--dry-run` prints the sample and makes no call and no write.
+
+The ledger holds the answers in `judge_labels` and the verdicts of a person in `judge_checks`. The reason lines go only to `judge-reasons.jsonl` next to the ledger, because a reason can quote the work. `review` prints judged runs with their reasons. `mark` stores your verdict. `score.py report` shows the counts per label and the share of checked runs that you marked right. The only network use is the `claude -p` call.
 
 ## Install
 

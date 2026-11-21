@@ -6,7 +6,8 @@
 # Run it inside any folder of a git repo. It needs git, and gh for the GitHub
 # parts. It writes nothing except the remote-tracking refs that `git fetch`
 # updates (skip that with --no-fetch). It spends two GitHub API calls: one for
-# pull requests, one for issues and their Project Status. A failed API call
+# pull requests, one for issues and their Project Status. The cost per merged
+# pull request reads the local score ledger and adds no call. A failed API call
 # prints "not read" and the sweep goes on; only "not a git repo" exits non-zero.
 #
 # Works on macOS bash 3.2: no associative arrays, no mapfile.
@@ -199,6 +200,28 @@ EOF
   [ "$n" -gt "$MAX_ROWS" ] && echo "  ... $((n - MAX_ROWS)) more"
   echo "LAST MERGED"
   printf '%s\n' "$PR_DATA" | awk -F'\t' '$1 == "MERGED" && ++n <= 5 { printf "  #%s %s %s\n", $2, $3, substr($5, 1, 60) } END { if (n == 0) print "  none" }'
+fi
+
+# Cost per merged pull request. Reads the local score ledger and the merged list above, so it
+# makes no GitHub call. Fail soft: a missing ledger or a failed script prints "not read".
+echo
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+LEDGER_FILE="${ORCHESTRATOR_LEDGER:-$HOME/.claude/orchestrator-ledger/ledger.db}"
+if [ -n "$PR_NOTE" ]; then
+  echo "COST PER MERGED PR: not read (no merged list)"
+elif [ ! -f "$LEDGER_FILE" ]; then
+  echo "COST PER MERGED PR: not read (no ledger at $LEDGER_FILE; run score.py scan)"
+elif ! PR_COST=$(python3 -I "$SCRIPT_DIR/score.py" pr-cost --repo "$OWNER/$NAME" --ledger "$LEDGER_FILE" 2>/dev/null); then
+  echo "COST PER MERGED PR: not read (score.py failed)"
+else
+  echo "COST PER MERGED PR  number, runs, cost in weighted units (estimate)"
+  { printf '%s\n' "$PR_DATA" | awk -F'\t' '$1 == "MERGED" { print "M\t" $2 }'
+    printf '%s\n' "$PR_COST" | awk -F'\t' 'NF == 3 { print "C\t" $1 "\t" $2 "\t" $3 }'
+  } | awk -F'\t' '
+    $1 == "M" { merged[$2] = 1; next }
+    $1 == "C" { runs[$2] = $3; cost[$2] = $4 }
+    END { for (n in merged) if (n in cost) { printf "  #%s %d %d\n", n, runs[n], cost[n]; k++ }
+          if (!k) print "  none of the recent merged pull requests has scored runs" }' | sort -t'#' -k2,2nr | head -n "$MAX_ROWS"
 fi
 
 # Open issues by Project and Status. Optional and fail soft.

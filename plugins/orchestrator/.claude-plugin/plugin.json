@@ -1,6 +1,6 @@
 {
   "name": "orchestrator",
-  "version": "2.8.0",
+  "version": "2.10.0",
   "description": "Runs a Claude Code session as an orchestrator: it manages worker subagents against a priorities file, does no task work itself, and shows the project's tracker tasks in a pane.",
   "author": {
     "name": "rizowski"

@@ -7,7 +7,17 @@ Run with `python3 -I score.py`. Standard library only.
       One row per subagent run in a SQLite ledger. Safe to run again: the row key
       is (session id, agent id). Without --days it reads every transcript.
   score.py report [--weeks 4] [--ledger FILE]
-      Failure kinds by total cost, cost per pull request, and the top runs.
+      Failure kinds by total cost, denials by rule, cost by model, cost per pull
+      request, and the top runs.
+  score.py pr-cost --repo OWNER/NAME [--ledger FILE]
+      One line per pull request of that repository: number, runs, cost (tab separated).
+
+Hook events come from the hook event log (~/.claude/hook-events/events.jsonl, or
+$CLAUDE_HOOKS_LOG_DIR/events.jsonl) for a run that started at or after the first
+line of the log. Older runs, and every run when the log is missing or empty, use
+the fixed texts in the transcript. The two are never added.
+
+judge.py adds two tables (judge_labels, judge_checks) and `report` shows them as JUDGE LABELS.
 
 The ledger holds ids, model names, agent types, counts, branch names, PR numbers
 and times. It never holds transcript text. No network call is made.
@@ -38,8 +48,8 @@ GENERAL_TYPE = "general-purpose"
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 FAILURE_KINDS = ["no_model", "over_calls", "gate_gave_up", "no_commit", "no_pr", "big_context"]
 
-# Fixed texts that mark a hook event in a transcript. A later slice replaces the
-# detection with a hook log; only detect_hook_event() reads this table.
+# Fixed texts that mark a hook event in a transcript. They serve runs from before
+# the hook event log; only detect_hook_event() reads this table.
 HOOK_TEXTS = {
     "denial": "Workers may not run or change",
     "gate_event": "SubagentStop",  # hook event of a finish gate block
@@ -49,6 +59,7 @@ HOOK_TEXTS = {
 
 DEFAULT_LEDGER = os.path.expanduser("~/.claude/orchestrator-ledger/ledger.db")
 AGENT_TOOLS = ("Agent", "Task")
+UNKNOWN_RULE = "unknown"  # a text-matched denial does not name its rule
 # A command starts a line or follows ; & | or (. A commit counts when the Bash result is not an
 # error and does not say that nothing was committed (commit -q prints nothing on success).
 COMMIT_CMD = re.compile(r"(?:^|[\n;&|(])\s*git\s+(?:-C\s+\S+\s+)?commit\b")
@@ -77,15 +88,90 @@ class Ledger:
         self.db.row_factory = sqlite3.Row
         cols = ", ".join("%s %s" % c for c in COLUMNS)
         self.db.execute("CREATE TABLE IF NOT EXISTS runs (%s, PRIMARY KEY (session_id, agent_id))" % cols)
+        self.db.execute("CREATE TABLE IF NOT EXISTS run_denials (session_id TEXT NOT NULL, agent_id TEXT NOT NULL, "
+                        "rule TEXT NOT NULL, count INTEGER, PRIMARY KEY (session_id, agent_id, rule))")
+        # Written by judge.py. Answers are yes, no or unknown. Reasons never come here.
+        self.db.execute("CREATE TABLE IF NOT EXISTS judge_labels (session_id TEXT NOT NULL, agent_id TEXT NOT NULL, "
+                        "label TEXT NOT NULL, answer TEXT NOT NULL, judge_model TEXT, judged_at TEXT, "
+                        "PRIMARY KEY (session_id, agent_id, label))")
+        self.db.execute("CREATE TABLE IF NOT EXISTS judge_checks (session_id TEXT NOT NULL, agent_id TEXT NOT NULL, "
+                        "verdict TEXT NOT NULL, checked_at TEXT, PRIMARY KEY (session_id, agent_id))")
 
     def upsert(self, row):
         self.db.execute("INSERT OR REPLACE INTO runs (%s) VALUES (%s)" % (
             ", ".join(NAMES), ", ".join("?" * len(NAMES))), [row.get(n) for n in NAMES])
         self.db.commit()
 
+    def set_denials(self, session_id, agent_id, by_rule):
+        """Replace the denial counts of one run. by_rule: rule name -> count."""
+        self.db.execute("DELETE FROM run_denials WHERE session_id = ? AND agent_id = ?", (session_id, agent_id))
+        self.db.executemany("INSERT INTO run_denials VALUES (?, ?, ?, ?)",
+                            [(session_id, agent_id, rule, n) for rule, n in by_rule.items() if n])
+        self.db.commit()
+
+    def denials_since(self, iso):
+        """Rule name -> total count, for runs that ended at or after iso."""
+        return {r[0]: r[1] for r in self.db.execute(
+            "SELECT d.rule, SUM(d.count) FROM run_denials d JOIN runs r USING (session_id, agent_id) "
+            "WHERE r.ended_at >= ? GROUP BY d.rule ORDER BY 2 DESC, 1", (iso,))}
+
+    def pr_costs(self, repo):
+        """(number, runs, cost) per pull request of one repository."""
+        return [tuple(r) for r in self.db.execute(
+            "SELECT pr_number, COUNT(*), SUM(cost) FROM runs WHERE pr_repo = ? AND pr_number IS NOT NULL "
+            "GROUP BY pr_number ORDER BY pr_number", (repo,))]
+
     def runs_since(self, iso):
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM runs WHERE ended_at >= ? ORDER BY ended_at", (iso,))]
+
+    def run(self, session_id, agent_id):
+        r = self.db.execute("SELECT * FROM runs WHERE session_id = ? AND agent_id = ?", (session_id, agent_id)).fetchone()
+        return dict(r) if r else None
+
+    def judged_ids(self):
+        """Set of (session id, agent id) that have judge labels."""
+        return {(r[0], r[1]) for r in self.db.execute("SELECT DISTINCT session_id, agent_id FROM judge_labels")}
+
+    def set_labels(self, session_id, agent_id, answers, judge_model, judged_at):
+        """Replace the labels of one run. answers: label -> yes | no | unknown."""
+        self.db.execute("DELETE FROM judge_labels WHERE session_id = ? AND agent_id = ?", (session_id, agent_id))
+        self.db.executemany("INSERT INTO judge_labels VALUES (?, ?, ?, ?, ?, ?)",
+                            [(session_id, agent_id, k, v, judge_model, judged_at) for k, v in answers.items()])
+        self.db.commit()
+
+    def labels_of(self, session_id, agent_id):
+        return {r[0]: r[1] for r in self.db.execute(
+            "SELECT label, answer FROM judge_labels WHERE session_id = ? AND agent_id = ?", (session_id, agent_id))}
+
+    def set_check(self, session_id, agent_id, verdict, checked_at):
+        self.db.execute("INSERT OR REPLACE INTO judge_checks VALUES (?, ?, ?, ?)",
+                        (session_id, agent_id, verdict, checked_at))
+        self.db.commit()
+
+    def judged_runs(self):
+        """Judged runs, newest first, each with its check verdict or None."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT r.*, (SELECT MAX(judged_at) FROM judge_labels l WHERE l.session_id = r.session_id AND "
+            "l.agent_id = r.agent_id) AS judged_at, (SELECT verdict FROM judge_checks c WHERE "
+            "c.session_id = r.session_id AND c.agent_id = r.agent_id) AS verdict FROM runs r WHERE EXISTS "
+            "(SELECT 1 FROM judge_labels l WHERE l.session_id = r.session_id AND l.agent_id = r.agent_id) "
+            "ORDER BY judged_at DESC")]
+
+    def label_counts_since(self, iso):
+        """label -> {answer: count}, for runs that ended at or after iso."""
+        out = collections.defaultdict(collections.Counter)
+        for label, answer, n in self.db.execute(
+                "SELECT l.label, l.answer, COUNT(*) FROM judge_labels l JOIN runs r USING (session_id, agent_id) "
+                "WHERE r.ended_at >= ? GROUP BY l.label, l.answer", (iso,)):
+            out[label][answer] = n
+        return out
+
+    def check_counts_since(self, iso):
+        """Counter of verdicts (right, wrong) for runs that ended at or after iso."""
+        return collections.Counter(dict(self.db.execute(
+            "SELECT c.verdict, COUNT(*) FROM judge_checks c JOIN runs r USING (session_id, agent_id) "
+            "WHERE r.ended_at >= ? GROUP BY c.verdict", (iso,))))
 
     def close(self):
         self.db.close()
@@ -117,6 +203,55 @@ def detect_hook_event(rec):
             if isinstance(b, dict) and b.get("type") == "tool_result" and HOOK_TEXTS["denial"] in text_of(b.get("content")):
                 out["denial"] += 1
     return out
+
+
+def parse_time(text):
+    """An ISO 8601 time as an aware datetime, or None. A time without a zone counts as UTC."""
+    if not isinstance(text, str):
+        return None
+    try:
+        t = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def hook_log_path():
+    folder = os.environ.get("CLAUDE_HOOKS_LOG_DIR") or os.path.expanduser("~/.claude/hook-events")
+    return os.path.join(folder, "events.jsonl")
+
+
+def load_hook_log(path=None):
+    """Read the hook event log. Returns (time of its first line or None, events).
+
+    events maps (session id, agent id) to a Counter of "deny:<rule>", "gate_block", "gate_giveup".
+    A missing file, an unreadable file and a broken line all give less data, never an error.
+    """
+    first, events = None, collections.defaultdict(collections.Counter)
+    try:
+        lines = list(read_jsonl(path or hook_log_path()))
+    except OSError:
+        return None, events
+    for rec in lines:
+        if not isinstance(rec, dict):
+            continue
+        when = parse_time(rec.get("time"))
+        if when is None:
+            continue
+        first = first or when
+        hook, kind = rec.get("hook"), rec.get("kind")
+        if hook == "policy-guard" and kind == "deny":
+            what = "deny:%s" % (str(rec.get("rule") or UNKNOWN_RULE)[:40])
+        elif hook == "finish-gate" and kind == "block":
+            what = "gate_block"
+        elif hook == "finish-gate" and kind == "give_up":
+            what = "gate_giveup"
+        else:
+            continue
+        sid, aid = rec.get("session_id"), rec.get("agent_id")
+        if isinstance(sid, str) and isinstance(aid, str):
+            events[(sid, aid)][what] += 1
+    return first, events
 
 
 def read_jsonl(path):
@@ -173,9 +308,9 @@ def run_events(path):
     return ev
 
 
-def launch_models(proj, sid):
-    """Map agent id -> was `model` given on the Agent call that started it, for one session."""
-    given = {}  # tool use id -> bool
+def launch_inputs(proj, sid):
+    """Map agent id -> the input of the Agent call that started it, for one session."""
+    given = {}  # tool use id -> input dict
     started = {}  # tool use id -> agent id
     files = [os.path.join(proj, sid + ".jsonl")] + subagent_files(proj, sid)
     for f in files:
@@ -191,12 +326,33 @@ def launch_models(proj, sid):
                     continue
                 for b in blocks(rec, "tool_use"):
                     if b.get("name") in AGENT_TOOLS:
-                        given[b.get("id")] = bool((b.get("input") or {}).get("model"))
+                        given[b.get("id")] = b.get("input") or {}
                 res = rec.get("toolUseResult")
                 if isinstance(res, dict) and res.get("agentId"):
                     for b in blocks(rec, "tool_result"):
                         started[b.get("tool_use_id")] = res["agentId"]
     return {aid: given[tid] for tid, aid in started.items() if tid in given}
+
+
+def launch_models(proj, sid):
+    """Map agent id -> was `model` given on the Agent call that started it, for one session."""
+    return {aid: bool(inp.get("model")) for aid, inp in launch_inputs(proj, sid).items()}
+
+
+def apply_hook_log(ev, session_id, agent_id, log):
+    """Set the hook counts of one run. A run takes its counts from the log only when the log
+    holds an event for it, or when it started at or after the first line of the log. Any
+    other run keeps its text-match counts."""
+    log_start, events = log
+    start = parse_time(ev["start"])
+    by_rule = {UNKNOWN_RULE: ev["denials"]} if ev["denials"] else {}
+    in_log = (session_id, agent_id) in events
+    if in_log or (log_start is not None and start is not None and start >= log_start):
+        c = events.get((session_id, agent_id), collections.Counter())
+        by_rule = {k[len("deny:"):]: n for k, n in c.items() if k.startswith("deny:")}
+        ev = dict(ev, gate_blocks=c["gate_block"], gate_giveups=c["gate_giveup"])
+    ev["denials"] = sum(by_rule.values())
+    return ev, by_rule
 
 
 def build_row(agent, ev, model_set, project, machine):
@@ -231,6 +387,7 @@ def scan(project_arg, days, ledger_path):
     machine, project = socket.gethostname(), os.path.basename(proj)
     s = Spend()
     ledger = Ledger(ledger_path)
+    log = load_hook_log()
     total = unknown = 0
     for path in sorted(glob.glob(os.path.join(proj, "*.jsonl")), key=os.path.getmtime):
         if os.path.getmtime(path) < cutoff:
@@ -243,16 +400,33 @@ def scan(project_arg, days, ledger_path):
         for a in x["agents"]:
             model_set = launched.get(a["agent_id"])
             unknown += model_set is None
-            ledger.upsert(build_row(a, run_events(a["path"]), model_set, project, machine))
+            ev, by_rule = apply_hook_log(run_events(a["path"]), a["session"], a["agent_id"], log)
+            ledger.upsert(build_row(a, ev, model_set, project, machine))
+            ledger.set_denials(a["session"], a["agent_id"], by_rule)
             total += 1
     ledger.close()
     print("scanned %d runs, model_set unknown for %d, ledger %s" % (total, unknown, ledger_path))
+
+
+JUDGE_LABELS = ["brief_unclear", "off_brief", "unsupported_claim", "redundant_tests", "ignored_rule", "scope_grew"]
+
+
+def judge_section(out, labels, checks):
+    """Counts of the model labels written by judge.py. Evidence only; nothing blocks on them."""
+    out("\nJUDGE LABELS (yes, no, unknown) - a small model's opinion, evidence only")
+    for k in JUDGE_LABELS:
+        c = labels.get(k, {})
+        out("  %-18s %5d %5d %5d" % (k, c.get("yes", 0), c.get("no", 0), c.get("unknown", 0)))
+    done = checks["right"] + checks["wrong"]
+    out("  checked by a person: %d, marked right: %s" % (done, "%d%%" % round(100.0 * checks["right"] / done) if done else "-"))
 
 
 def report(weeks, ledger_path, out=print):
     ledger = Ledger(ledger_path)
     since = (datetime.now(timezone.utc) - timedelta(weeks=weeks)).strftime("%Y-%m-%dT%H:%M:%S")
     rows = ledger.runs_since(since)
+    denials = ledger.denials_since(since)
+    labels, checks = ledger.label_counts_since(since), ledger.check_counts_since(since)
     ledger.close()
     out("Last %d weeks: %d runs, cost %d weighted units (estimate)" % (weeks, len(rows), sum(r["cost"] for r in rows)))
     kinds = {k: [0, 0.0] for k in FAILURE_KINDS}
@@ -264,6 +438,20 @@ def report(weeks, ledger_path, out=print):
     out("\nFAILURE KINDS (count, total cost)")
     for k, (n, c) in sorted(kinds.items(), key=lambda kv: -kv[1][1]):
         out("  %-13s %5d %12d" % (k, n, c))
+    out("\nDENIALS BY RULE (count)")
+    for rule, n in denials.items():
+        out("  %-24s %5d" % (rule, n))
+    if not denials:
+        out("  none")
+    models = collections.defaultdict(lambda: [0, 0.0, 0])
+    for r in rows:
+        m = models[r["model"] or "unknown"]
+        m[0] += 1
+        m[1] += r["cost"]
+        m[2] += any(failures(r).values())
+    out("\nBY MODEL (runs, total cost, share of runs with a failure)")
+    for k, (n, c, bad) in sorted(models.items(), key=lambda kv: -kv[1][1]):
+        out("  %-28s %5d %12d %5d%%" % (k, n, c, round(100.0 * bad / n)))
     out("\nCOST PER PULL REQUEST (repository#number, runs, cost)")
     prs = collections.defaultdict(lambda: [0, 0.0])
     for r in rows:
@@ -273,6 +461,7 @@ def report(weeks, ledger_path, out=print):
             p[1] += r["cost"]
     for k, (n, c) in sorted(prs.items(), key=lambda kv: -kv[1][1])[:10]:
         out("  %-40s %3d %12d" % (k, n, c))
+    judge_section(out, labels, checks)
     out("\nTOP RUNS (session agent type model calls peak-ctx cost branch failures)")
     for r in sorted(rows, key=lambda r: -r["cost"])[:10]:
         bad = ",".join(k for k, v in failures(r).items() if v) or "-"
@@ -290,13 +479,22 @@ def main():
     b = sub.add_parser("report", help="failure kinds, cost per pull request, top runs")
     b.add_argument("--weeks", type=int, default=4)
     b.add_argument("--ledger", default=DEFAULT_LEDGER)
+    c = sub.add_parser("pr-cost", help="number, runs and cost per pull request of one repository")
+    c.add_argument("--repo", required=True, help="OWNER/NAME")
+    c.add_argument("--ledger", default=DEFAULT_LEDGER)
     args = p.parse_args()
     if args.cmd == "scan":
         scan(args.project, args.days, args.ledger)
-    else:
-        if not os.path.exists(args.ledger):
-            sys.exit("No ledger at %s. Run scan first." % args.ledger)
+        return
+    if not os.path.exists(args.ledger):
+        sys.exit("No ledger at %s. Run scan first." % args.ledger)
+    if args.cmd == "report":
         report(args.weeks, args.ledger)
+    else:
+        ledger = Ledger(args.ledger)
+        for number, runs, cost in ledger.pr_costs(args.repo):
+            print("%d\t%d\t%d" % (number, runs, cost))
+        ledger.close()
 
 
 if __name__ == "__main__":
