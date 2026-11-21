@@ -138,8 +138,8 @@ Tasks live in a tracker, not in your head and not in the priorities file.
 
 ## At launch
 
-1. In one Bash call, run the sweep and the context check:
-   `bash "<scripts>/sweep.sh"; python3 -I "<scripts>/spend.py" --current`.
+1. In one Bash call, run the sweep and the spend check:
+   `bash "<scripts>/sweep.sh"; python3 -I "<scripts>/spend.py" --current; python3 -I "<scripts>/spend.py" --trend`.
    No scout for the launch scan. For a Kanzo repo, also read the tasks with its tools.
 2. Read the priorities file. If it is missing or empty, take the priorities from the
    launch notes below or ask me, and write the file. Migrate it if the sweep says so. A
@@ -160,15 +160,41 @@ Tasks live in a tracker, not in your head and not in the priorities file.
 - Check each claim against the PR and CI (`gh pr view`, `gh pr checks`) before you repeat
   it; a claim that needs more goes to a worker.
 - Before each status report, run the launch command of step 1 again instead of separate
-  `gh` calls, and read the tasks you report on, so the report and the tracker agree.
+  `gh` calls, and read the tasks you report on, so the report and the tracker agree. Show
+  the `SPEND:` line in the report.
 - When I change the priorities, update the file and its date.
 - Anything not in the file is a side quest. Take it only when every priority waits on me.
 
-**Hand off before the context grows too large.** When `spend.py --current` prints
-`HANDOFF: yes` (near 120,000 tokens), write each priority's state into its task comments,
-bring the priorities file up to date, tell me to start a fresh orchestrator session, and
-start no new work. The script reads the saved transcript, so it lags by one turn at most.
-If it fails or its number looks wrong, hand off after about 15 worker reports instead.
+## Spend
+
+I care about spend and want it to fall over time, most of all token reads. Do not hand off
+to a fresh session because the context is large: a new session writes its whole starting
+load to the cache at 1.25x, while a cached read costs 0.1x. Keep the session and fix the
+cause of a high figure instead.
+
+Run `spend.py --current` at launch and before each status report. It prints the starting
+and current context, tokens and weighted cost by kind, the cache hit rate, the advisor
+cost and the subagent cost, records the session (only when the session id is known) for `spend.py --trend`, and ends with a
+`SPEND:` line. Show that line in the report. When a figure looks high, name the likely
+cause and one fix:
+
+- **Large starting load** (above about 60k tokens): the always-loaded files, skills and MCP
+  servers. Fix: trim the CLAUDE.md and memory files, or turn off MCP servers that this
+  project does not use.
+- **Low cache hit rate** (below about 90% after 10 or more turns; ignore it at launch, when
+  the first turns only write the cache): the cache goes cold between turns or the start
+  of the prompt changes. Fix: send the next turn within 5 minutes, and do not edit the
+  priorities file or other early context without need.
+- **Many advisor calls, or advisor cost above about 20% of main cost**: the advisor reads
+  the whole transcript uncached. Fix: consult it only at the three moments listed above.
+- **Big file reads in the main thread**: output cost and context grow with each one.
+  Fix: send the read to a `scout` and bring back the answer.
+- **Subagent cost above about half of the total**: Fix: give lookups to `scout` on Haiku
+  and set an explicit small model on every launch.
+
+`spend.py --trend` prints one line per week (median starting context, cache hit rate, cost
+per turn, advisor and subagent share). The launch command prints it. Tell me when a figure
+moves the wrong way for two weeks.
 
 ## Writing to me
 

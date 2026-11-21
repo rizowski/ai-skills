@@ -30,7 +30,6 @@ TOKEN_WEIGHTS = {
     "output": 5.0,
 }
 BIG_CONTEXT = 150_000  # a turn above this counts as a "big context" turn
-HANDOFF_CONTEXT = 120_000  # the orchestrator hands off near this context size
 
 PROJECTS = os.path.expanduser("~/.claude/projects")
 
@@ -42,19 +41,20 @@ def model_weight(model):
     return MODEL_WEIGHTS[-1][1]
 
 
-def call_cost(u, model):
+def call_tokens(u):
+    """Token counts of one API call, by kind (the keys of TOKEN_WEIGHTS)."""
     cc = u.get("cache_creation") or {}
-    w5 = cc.get("ephemeral_5m_input_tokens", 0) if cc else u.get("cache_creation_input_tokens", 0)
-    w1 = cc.get("ephemeral_1h_input_tokens", 0) if cc else 0
-    t = TOKEN_WEIGHTS
-    units = (
-        t["input"] * u.get("input_tokens", 0)
-        + t["cache_read"] * u.get("cache_read_input_tokens", 0)
-        + t["cache_write_5m"] * w5
-        + t["cache_write_1h"] * w1
-        + t["output"] * u.get("output_tokens", 0)
-    )
-    return model_weight(model) * units
+    return {
+        "input": u.get("input_tokens", 0),
+        "cache_read": u.get("cache_read_input_tokens", 0),
+        "cache_write_5m": cc.get("ephemeral_5m_input_tokens", 0) if cc else u.get("cache_creation_input_tokens", 0),
+        "cache_write_1h": cc.get("ephemeral_1h_input_tokens", 0) if cc else 0,
+        "output": u.get("output_tokens", 0),
+    }
+
+
+def call_cost(u, model):
+    return model_weight(model) * sum(TOKEN_WEIGHTS[k] * n for k, n in call_tokens(u).items())
 
 
 def context(u):
@@ -144,15 +144,21 @@ class Spend:
                 continue
             calls, advisor, ctx = split_usage(usage, model)
             cost = 0.0
+            tokens = collections.Counter()
             for u, mm in calls:
                 c = call_cost(u, mm)
                 self.by_model[model] += c
                 cost += c
+                tokens.update(call_tokens(u))
+            kind_cost = {k: model_weight(model) * TOKEN_WEIGHTS[k] * n for k, n in tokens.items()}
+            adv_cost = 0.0
             for u, mm in advisor:
                 c = call_cost(u, mm)
                 self.by_model[mm + " (advisor)"] += c
                 cost += c
-            out.append(dict(model=model, cost=cost, ctx=ctx))
+                adv_cost += c
+            out.append(dict(model=model, cost=cost, ctx=ctx, tokens=tokens, kind_cost=kind_cost,
+                            advisor_cost=adv_cost, advisor_calls=len(advisor)))
         sizes = []
         for tid, n in results:
             if ("result", tid) not in self.seen:
@@ -225,5 +231,13 @@ def read_session(s, proj, path):
                                type=agent_meta(f).get("agentType", "?"),
                                model=models.most_common(1)[0][0], calls=sum(tools.values()),
                                cost=sum(r["cost"] for r in rs), peak=max(r["ctx"] for r in rs), tools=tools))
-    return dict(sid=sid[:8], main=main, sizes=sizes, advisor_model=advisor_model, agents=agents,
-                main_cost=sum(r["cost"] for r in main), sub_cost=sum(a["cost"] for a in agents))
+    tokens = collections.Counter()
+    kind_cost = collections.Counter()
+    for r in main:
+        tokens.update(r["tokens"])
+        kind_cost.update(r["kind_cost"])
+    return dict(sid=sid[:8], session=sid, main=main, sizes=sizes, advisor_model=advisor_model, agents=agents,
+                main_cost=sum(r["cost"] for r in main), sub_cost=sum(a["cost"] for a in agents),
+                tokens=tokens, kind_cost=kind_cost,
+                advisor_cost=sum(r["advisor_cost"] for r in main),
+                advisor_calls=sum(r["advisor_calls"] for r in main))
