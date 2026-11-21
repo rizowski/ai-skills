@@ -1,4 +1,4 @@
-"""Tests for score.py. Run with `python3 -m unittest score_test` in this folder.
+"""Tests for score.py. Run with `python3 -m unittest` in this folder.
 
 The fixtures are small synthetic transcripts built here. Their prompt text is a
 marker string that must never reach the ledger or the report.
@@ -200,6 +200,15 @@ class ScoreTest(unittest.TestCase):
         count = db.db.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
         db.close()
         self.assertEqual((count, len(rows)), (2, 2))
+
+    def test_second_scan_updates_a_run_that_was_still_going(self):
+        a = good_worker("a1")
+        first = self.scan([a])["a1"]
+        a.tool("Read", {"file_path": "/x"}, "ok")
+        second = self.scan([a])["a1"]
+        self.assertGreater(second["tool_calls"], first["tool_calls"])
+        self.assertGreater(second["cost"], first["cost"])
+        self.assertGreater(second["ended_at"], first["ended_at"])
 
     def test_no_prompt_text_reaches_ledger_or_report(self):
         a = good_worker("a1")

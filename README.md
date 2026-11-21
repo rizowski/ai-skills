@@ -75,7 +75,7 @@ python3 -I plugins/orchestrator/scripts/score.py report [--weeks 4]
 - `no_commit` and `no_pr`: a code worker (`orchestrator:worker`, or `general-purpose` with Edit or Write calls) made no successful `git commit`, or no `gh pr create` that printed a pull request URL. Read-only runs are never failed for these.
 - `big_context`: peak context above 150,000 tokens.
 
-Policy guard denials are counted in the row and are never a failure. Hook events are found by their fixed texts in the transcript (one table in `score.py`). A commit counts when its Bash call did not fail and did not report "nothing to commit". Tests: `cd plugins/orchestrator/scripts && python3 -m unittest score_test`.
+Policy guard denials are counted in the row and are never a failure. Hook events are found by their fixed texts in the transcript (one table in `score.py`). A commit counts when its Bash call did not fail and did not report "nothing to commit". Tests: `cd plugins/orchestrator/scripts && python3 -m unittest`.
 
 Baseline before version 2.8.0, from 10 days of real sessions in one project:
 
