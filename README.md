@@ -69,6 +69,24 @@ python3 -I plugins/orchestrator/scripts/score.py report [--weeks 4]
 python3 -I plugins/orchestrator/scripts/score.py pr-cost --repo <owner/name>
 ```
 
+`stats` prints one JSON object for a date range, for a job that reads it: `python3 -I plugins/orchestrator/scripts/score.py stats --from 2026-11-01 --to 2026-11-28 [--ledger FILE] [--project NAME]`. `--from` is inclusive and `--to` is exclusive, both local dates, compared with the start time of a run. `--project` limits the rows to one project name as stored in the ledger. A missing ledger is an error: exit code 1 and one line on stderr. An empty range gives zero counts and exit code 0. The shape is a contract, and it holds only numbers and names, never text from a transcript:
+
+```json
+{
+  "schema": 1,
+  "from": "2026-11-01",
+  "to": "2026-11-28",
+  "runs": 123,
+  "code_runs": 80,
+  "cost": 123456789,
+  "failures": {"no_model": {"runs": 10, "cost": 1234}, "over_calls": {"runs": 3, "cost": 5678}},
+  "judge": {"off_brief": {"yes": 2, "no": 3, "unknown": 1}},
+  "denials": {"git-push": 4}
+}
+```
+
+`runs` is every run in the range and `code_runs` the code workers among them. `failures` lists every failure kind (also with 0 runs) with the total cost of the runs that have it. `judge` holds each label with its counts, and is `{}` with no judge tables. `denials` is the count per rule, `{}` when there is none. Schema 1: a change to a key or its meaning needs a new schema number.
+
 `scan` without `--days` reads every transcript. `report` lists the failure kinds by total cost, the policy guard denials by rule, the runs and cost by model (with the share of runs that have a failure), the cost per pull request and the top runs. `pr-cost` prints one line per pull request of a repository. `sweep.sh` uses it to print the cost per merged pull request from the ledger, with no GitHub call, and prints "not read" when the ledger is missing. A run can fail in these ways. The limits are constants at the top of `score.py`.
 
 - `no_model`: the Agent call did not set `model`. When the parent transcript does not show the call, `model_set` is NULL and the run is not failed.
