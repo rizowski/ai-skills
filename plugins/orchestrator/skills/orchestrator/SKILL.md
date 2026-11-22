@@ -100,6 +100,14 @@ Each brief is the only context the worker gets. Include:
 - "If `git push` over SSH fails, stop and report; do not push over HTTPS or change the
   remote.";
 - "No Co-Authored-By or other attribution lines in commits or PR descriptions.";
+- for a task that changes anything visible: "Attach before and after screenshots to the PR.
+  Both show the same screen and state, captured lifelike: the app in a simulator or
+  emulator, the page in a browser, or the real UI components rendered (Compose screenshot
+  or preview tests, Playwright, Storybook). Hand-drawn mockups do not count. Mocked or
+  seeded data is fine. Take the before from origin/main and the after from the branch;
+  for a new screen, say that there is no before. `gh` cannot upload images, so commit them
+  on the branch and show them in the PR body with links to the branch's raw files. Name
+  the method in the PR.";
 - the finish line: a commit at each step (a `WIP:` commit if it must stop early), checks
   passed by exit code, the branch pushed and a PR open, a comment on the task, and my
   steps with exact commands that start with `cd <absolute path>`;
@@ -162,6 +170,8 @@ Tasks live in a tracker, not in your head and not in the priorities file.
 - Before each status report, run the launch command of step 1 again instead of separate
   `gh` calls, and read the tasks you report on, so the report and the tracker agree. Show
   the `SPEND:` line in the report.
+- Before you report a UI PR as ready or as waiting on merge, confirm that the PR body has
+  both the before and the after image. If one is missing, send the work back to the worker.
 - When I change the priorities, update the file and its date.
 - Anything not in the file is a side quest. Take it only when every priority waits on me.
 
