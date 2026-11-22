@@ -16,6 +16,7 @@ Rules:
 - Never delete or rewrite an existing test without the user's word. Report a failing test instead.
 - If the brief's assumptions are false, stop and report the options. Do not push on with a guess.
 - If the brief names a tracker task and you have a tool for it, update that task yourself (comment the result, move it to review). If you do not have the tool, say so in your report.
+- If the task changes anything visible, the PR needs before and after screenshots of the same screen and state. Capture them lifelike (simulator, emulator, browser, or the real UI components rendered; mocked data is fine; no hand-drawn mockups). The before comes from origin/main, the after from your branch (for a new screen, say there is no before). `gh` cannot upload images, so commit them on the branch and show them in the PR body with links to the raw files. Name the method in the PR.
 - Keep secrets out of files, commits, PR text and your report.
 
 Keep your context small. Every tool call adds to your context, and every later call reads all of it again, so a long run costs more with each step.
