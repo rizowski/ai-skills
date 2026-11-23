@@ -1,6 +1,6 @@
 # board-agents: design for Vercel Board agent roles
 
-Status: design for the user's review. No implementation. Tracker: Kanzo ai-skills#87.
+Status: design, with slice 1 of the scripts (`board-agents/`) built. Section 10 lists what the real CLI changed; `VB-CLI.md` wins over older text here. Tracker: Kanzo ai-skills#87.
 Pod build: Kanzo home#85 (the home session builds the pod from section 7).
 
 ## 0. How to read this
@@ -17,7 +17,7 @@ Verified `vb` commands (from the demo):
 vb tasks claim <id> --lease 30s --as <name>     # claim one task
 vb tasks claim --ready work --as <name>         # claim the next ready task in channel "work"
 vb tasks complete <id> "<text>" --as <name>
-vb tasks block <id> "<text>" --kind approval    # --kind decision: UNVERIFIED (same flag, other value)
+vb tasks block <id> "<text>" --kind awaiting_approval   # real kinds: needs_input, awaiting_approval (section 10)
 vb tasks unblock <id>
 vb read <id>                                    # who holds it, until when, what it waits for
 vb tasks create ... --needs <id>                # --needs is in the notes; full shape is not
@@ -285,9 +285,14 @@ secret.
 - Git: a credential helper reading the env, set at container start, no token on disk:
   `git config --global credential.helper '!f() { echo username=$GIT_USERNAME; echo password=$GIT_TOKEN; }; f'`.
   `user.name` and `user.email` from env (OPEN: values). FIXED: env names.
-- gh: start script exports `GH_TOKEN=$GIT_TOKEN`; no `gh auth login`.
-- OPEN: a second, read-only PAT for the reviewer and relay (recommend yes; a second Secret key
-  such as `GIT_TOKEN_RO`, mapped to `GIT_TOKEN` in those containers).
+- gh: `lib.sh` exports `GH_TOKEN=$GIT_TOKEN` when it is missing; no `gh auth login`. The credential
+  helper is set through `GIT_CONFIG_*` env vars, so no config file and no token on disk.
+- `BOARD_AGENTS_SHARED_DIR` (default `/shared`): shared emptyDir for the Claude-run cap (flock
+  slot files and the hourly run log). Not the token dir, not `/data`.
+- Reviewer token (decided by the home session): the reviewer reads `REVIEWER_GIT_TOKEN`. If it is
+  missing, the reviewer fails at start. It never falls back to `GIT_TOKEN`. `lib.sh` `ba_auth_setup reviewer`
+  enforces this and uses that token for git and `GH_TOKEN`. Until the pod sets it, the reviewer
+  does not run. The relay takes only `GH_TOKEN`.
 - Claude: `CLAUDE_CODE_OAUTH_TOKEN` (subscription, from `claude setup-token`); `ANTHROPIC_API_KEY`
   must be unset. FIXED.
 - `~/.claude`: lives in the shared HOME; recommend emptyDir, plus `CLAUDE_CONFIG_DIR=$HOME/.claude-<role>`
@@ -300,9 +305,9 @@ secret.
 | Role | Start command | Env | Paths | Board restart |
 |---|---|---|---|---|
 | board | `vb serve --dir /data/board` (loopback, port 4100; no bind flag) | none | `/data/board`; writes `$HOME/.config/board/local/<hash>.json` | New in-memory keys, new token file. State survives only on a PVC. Readiness: TCP 4100 (HTTP gives 401 without a token) |
-| worker | `/opt/board-agents/run-worker.sh` (loop of `vb tasks run -- ...`) | `board-agents` Secret, `GH_TOKEN`, `ROLE=worker` | `/work/worker`, `~/.claude-worker`, `/work/.slots` | see rule below |
-| reviewer | `/opt/board-agents/run-reviewer.sh` | Secret (read-only PAT if O5), `ROLE=reviewer` | `/work/reviewer`, `~/.claude-reviewer`, `/work/.slots` | same |
-| ci-fixer | `/opt/board-agents/run-ci-fixer.sh` | Secret, `ROLE=ci` | `/work/ci`, `~/.claude-ci`, `/work/.slots` | same |
+| worker | `/opt/board-agents/run-worker.sh` (loop of `vb tasks run -- ...`) | `board-agents` Secret, `GH_TOKEN`, `ROLE=worker` | `/work/worker`, `~/.claude-worker`, `$BOARD_AGENTS_SHARED_DIR` (`/shared`) | see rule below |
+| reviewer | `/opt/board-agents/run-reviewer.sh` | Secret (read-only PAT if O5), `ROLE=reviewer` | `/work/reviewer`, `~/.claude-reviewer`, `/shared` | same |
+| ci-fixer | `/opt/board-agents/run-ci-fixer.sh` | Secret, `ROLE=ci` | `/work/ci`, `~/.claude-ci`, `/shared` | same |
 | relay | `/opt/board-agents/run-relay.sh` (loop plus PR watcher) | `GH_TOKEN` only (read-only); no Claude token | none | same |
 
 Board restart rule (FIXED, from the user): agents call `vb` per command, never cache the
@@ -327,7 +332,7 @@ The nodes are shared, so keep requests low and limits firm. Estimates, UNVERIFIE
 | **Pod total** | **1150m / 3850m** | **2.7Gi / 5.4Gi** |
 
 Concurrency cap (recommended, OPEN): at most 2 Claude runs at once across the pod, using
-a `flock` semaphore with 2 slot files under `/work/.slots` (shared emptyDir; each runner
+a `flock` semaphore with 2 slot files under `$BOARD_AGENTS_SHARED_DIR/slots` (`/shared`, an emptyDir mounted in all four agent containers; each runner
 takes a slot before `claude` and waits, with the lease kept by `tasks run`). Any role can
 take a slot, but the worker is the heaviest, so a normal peak is worker + one of
 reviewer or ci-fixer. With the cap, the peak is worker + reviewer + board + relay: about
@@ -355,7 +360,7 @@ the worker limit per repo if the-monorepo needs it.
 ## 9. Unverified in the spike (test before building)
 
 1. `tasks create` options: channel, tags, `--needs` with them, output format.
-2. `--kind decision` (only `approval` verified).
+2. `--kind decision`: it does not exist (kinds are `needs_input` and `awaiting_approval`; see section 10).
 3. How `tasks run` binds a task to the child (id, text) and its lease flag.
 4. The renew command; the CLI `fail` shape.
 5. Release without completing; reopen; list tasks or blocked tasks; read thread replies; post a comment.
@@ -364,3 +369,45 @@ the worker limit per repo if the-monorepo needs it.
 8. `gh pr checks` fields and exit codes in the installed `gh`.
 9. Client recovery after a board restart (the notes say only that the token changes).
 10. All CPU and memory figures.
+
+## 10. Facts from the real CLI (slice 1)
+
+Full help text and tested behaviour: `VB-CLI.md`. What changed against sections 0 to 9:
+
+- `BOARD_URL`: `vb` reads it itself. The pod sets `BOARD_URL=http://127.0.0.1:4100/api/board`; no
+  `--url` flag is needed. Agents talk to `vb serve` directly and never go through Caddy, so a later
+  Caddy login on `board.k3s.lan` does not affect them.
+- The smoke and list command is `vb tasks` (with `--state`, `--label`, a channel). Not `tasks list`.
+- Block kinds: `needs_input` (was "decision") and `awaiting_approval` (was "approval").
+- Create: `vb tasks create <channel> "<text>" --label step=<kind> [--needs <id>] [--idempotency-key K]`.
+  Claim: `vb tasks claim --ready <channel> --label step=<kind> --as <name>`. One channel per role
+  (`work`, `review`, `ci`, `final`) and a `step` label; the relay creates missing channels. A list
+  of a channel that does not exist is an error.
+- `--as <name>` on claim must be repeated on `block`, `renew`, `complete`, `fail`, `release`.
+  `unblock`, `label`, `reopen`, `cancel` are owner actions and need no claim.
+- Thread: `vb read <id> --json` returns `replies[]` with `id`, `text`, `createdAt`. Comment:
+  `vb reply <id> "<text>"`. Ids are numeric and grow.
+- `block` stores its reason on the task, not in the thread. So the runner also posts a reply that
+  starts `BLOCKED:`. The relay unblocks on the first reply that starts `ANSWER:` and has a higher id
+  than the last `BLOCKED:` reply, then posts `UNBLOCKED:`. A task blocked without a `BLOCKED:` marker
+  is skipped. The relay handles `needs_input` only; `awaiting_approval` (final review) is for the user.
+- `tasks run` passes only `BOARD_TASK` (the id) to the child. The runner reads the text with `vb read`.
+- Error reasons: `nothing_ready` (normal), `network_error`, `no_project` (token file missing). The
+  last two are retried with backoff. Claim records live in `~/.config/board/claims/`; keep that dir.
+- Security: the board web inspector has no login, so any user on the LAN can post in any thread.
+  The relay treats thread text as data (never evaluated, never put in a command line except as a
+  quoted argument, PR keys checked against a strict pattern). The `ANSWER:` marker is a convention,
+  not an identity check. A person who can reach the board can answer for the user. If that is not
+  acceptable, put a login in front of the inspector. Agents are unaffected, as above.
+- GitHub quota: a fine-grained PAT is rate limited per user, so the agents' PAT draws on the same
+  5,000 requests per hour as the user's own `gh` calls (GitHub documents the limit per user; not
+  proven against this PAT in the pod). The watcher makes one `gh pr checks` call per open PR per
+  60 s poll and backs off (2 min, doubling to 15 min) on a rate-limit reply. Five open PRs cost
+  about 300 calls per hour.
+
+### Assumptions taken from section 8 (not confirmed by the user)
+
+O1 channels per role plus a `step` label. O2 caps 2 send-backs, 3 CI fixes, 3 decision round trips
+(CI cap built in the relay). O3 the `ANSWER:` prefix. O4 the relay hosts the PR watcher. O5 a
+separate reviewer PAT (now `REVIEWER_GIT_TOKEN`). O6 the reviewer only comments. O8 two Claude runs
+at once, 10 runs per hour. O10 the-monorepo only.
