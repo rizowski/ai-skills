@@ -191,6 +191,11 @@ Common to all Claude roles:
 - A reply alone never unblocks (demo: `task_blocked` until `unblock`). The relay is the only
   role that unblocks, so a role cannot answer its own question.
 - Check task state before `unblock`; unblocking a `ready` task is UNVERIFIED.
+- PR watcher limits (env, defaults): a PR with pending or errored checks backs off
+  `BA_PR_BACKOFF_START` 60 s, doubling to `BA_PR_BACKOFF_MAX` 900 s, per PR, in
+  `$BA_RELAY_STATE_DIR/pr-watch.tsv` (default `$BOARD_AGENTS_SHARED_DIR/relay`, so a restart
+  keeps it). It gives up after `BA_PR_PENDING_MAX` 21600 s pending or `BA_PR_ERROR_MAX` 5
+  errors in a row: a reply on the task, and an `awaiting_approval` task for the user.
 - The user is outside the pod and the board is loopback only (O7). The interactive
   orchestrator carries the user's answer into the thread and keeps its "Waiting on you"
   list from the board; the relay writes no file.
