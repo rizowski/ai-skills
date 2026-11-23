@@ -405,6 +405,25 @@ Full help text and tested behaviour: `VB-CLI.md`. What changed against sections 
   60 s poll and backs off (2 min, doubling to 15 min) on a rate-limit reply. Five open PRs cost
   about 300 calls per hour.
 
+### Slice 2: the runners (`run-worker.sh`, `run-reviewer.sh`, `run-ci-fixer.sh`)
+
+- Lease: the runner claims, then a background loop runs `vb tasks renew --as` every 5 min (lease 15 min).
+  `vb tasks run` is not used: its `--result` is fixed before the job starts, but the reviewer's
+  result depends on the verdict. A failed renew is `claim_lost`: Claude is stopped, the checkout is
+  deleted, nothing is pushed or completed.
+- Claude gets no git or GitHub credentials. The runner clones, pushes (plain push of `HEAD` to a
+  `board/*` branch, never the default branch) and makes the few `gh` calls. Claude flags: `CLAUDE-CLI.md`.
+- Last-line protocol: worker `RESULT: done` or `NEEDS_INPUT: ...`; reviewer one JSON verdict line;
+  CI fixer `RESULT: fixed`, `RESULT: no_change ...` or `NEEDS_INPUT: ...`.
+- Reviewer push guard: the reviewer's PAT (`REVIEWER_GIT_TOKEN`) may be able to write for now. So
+  the reviewer checkout cannot push: `git remote set-url --push origin DISABLED` plus a `pre-push`
+  hook that exits 1, and the prompt says the reviewer only comments. This does not depend on the PAT being read-only.
+- Task text keys: `repo:<owner/repo>`, `branch:board/...`, `issue:<owner/repo>#<n>`, `round N/3` (work),
+  `round:N` (review), `pr:<owner/repo>#<n>`. Values are matched against strict patterns.
+- gh calls per task: worker 2 (`pr list`, `pr create`), reviewer 2 (`pr view`, `pr comment`), CI fixer
+  2 to 3 (`pr view`, `run view --log-failed` for up to 2 runs).
+- Not built: flaky rerun (`gh run rerun`), "two failures in a row, then block", the pod's `pre-push` hook for the worker.
+
 ### Assumptions taken from section 8 (not confirmed by the user)
 
 O1 channels per role plus a `step` label. O2 caps 2 send-backs, 3 CI fixes, 3 decision round trips
