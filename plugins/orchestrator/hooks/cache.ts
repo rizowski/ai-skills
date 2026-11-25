@@ -26,6 +26,8 @@ export type Entry = {
   loaded?: Loaded
   /** Numbers of the Projects that held items of the repository at the last full scan. */
   relevant?: number[]
+  /** Numbers of every open Project that the source reads, as of the last read; a Project missing here is new. */
+  seen?: number[]
   scannedAt?: number
   /** Reads that failed in a row. */
   failures?: number
@@ -46,8 +48,16 @@ export type Cached = {
   run: Run
 }
 
-/** One read of GitHub. `known` lists the Projects to read; absent, every Project is read. */
-export type Fetch = (known: number[] | undefined) => Promise<{ loaded: Loaded; relevant: number[] }>
+/**
+ * One read of GitHub. `known` and `seen` come from the last read. It lists the
+ * Projects every time, and reads only `known` when no Project is new since
+ * `seen`; otherwise (or when `known` is absent) it reads every Project and
+ * resolves `isFull`.
+ */
+export type Fetch = (
+  known: number[] | undefined,
+  seen: number[] | undefined,
+) => Promise<{ loaded: Loaded; relevant: number[]; seen: number[]; isFull: boolean }>
 
 export const isRateLimitError = (message: string) => /rate limit|unknown owner type|\b50[23]\b/i.test(message)
 
@@ -145,19 +155,17 @@ export const readCached = async (cache: Cached, fetch: Fetch): Promise<Loaded> =
     const isScanFresh = entry.relevant !== undefined && now - (entry.scannedAt ?? 0) < RESCAN_MS
     try {
       const isPartial = isScanFresh && !isForced
-      let isFull = !isPartial
       let result
       try {
-        result = await fetch(isPartial ? entry.relevant : undefined)
+        result = await fetch(isPartial ? entry.relevant : undefined, entry.seen)
       } catch (err) {
         // A listed Project may be closed or deleted. Try a full scan once before the read counts as failed.
         const message = err instanceof Error ? err.message : ''
         if (!isPartial || isRateLimitError(message)) throw err
-        isFull = true
-        result = await fetch(undefined)
+        result = await fetch(undefined, undefined)
       }
-      const scannedAt = isFull ? now : entry.scannedAt
-      await writeEntry(run, file, { fetchedAt: now, loaded: result.loaded, relevant: result.relevant, scannedAt, failures: 0 })
+      const scannedAt = result.isFull ? now : entry.scannedAt
+      await writeEntry(run, file, { fetchedAt: now, loaded: result.loaded, relevant: result.relevant, seen: result.seen, scannedAt, failures: 0 })
 
       return result.loaded
     } catch (err) {
