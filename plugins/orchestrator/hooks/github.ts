@@ -1,11 +1,12 @@
 import type { Loaded, TaskGroup, TaskRow } from '../types'
 import type { GithubSource } from './config'
+import { readCached } from './cache'
+import type { Cached, Run } from './cache'
 import { isRecord, tryJson } from './json'
 
 export const GITHUB_LABEL = 'GitHub'
 
-/** Runs a command by its argument vector and resolves how it ended. */
-export type Run = (argv: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>
+export type { Run }
 
 type Item = { number: number; title: string; status: string; repository: string }
 
@@ -69,22 +70,34 @@ const groupByStatus = (items: Item[], statuses: string[]): TaskGroup[] =>
     }))
     .filter(group => group.tasks.length > 0)
 
+/** The cache a read goes through; `key` is built here from the source and the repository. */
+export type GithubCache = Omit<Cached, 'key'>
+
+const cacheKey = (source: GithubSource, owner: string, name: string | undefined) =>
+  `github-${[owner, name ?? '', (source.projects ?? ['*']).join(','), source.statuses.join(',')].join('__').replace(/[^A-Za-z0-9._,-]/g, '_')}.json`
+
 /**
  * Reads the issues and pull requests of this repository from the owner's
  * GitHub Projects, with the `gh` CLI, and keeps those whose Status is listed.
- * Throws when `gh` fails, when no owner is known, or when a listed Project
- * title does not exist.
+ * `known` lists the Project numbers to read, which skips `gh project list` and
+ * the Projects that held nothing of this repository. Throws when `gh` fails,
+ * when no owner is known, or when a listed Project title does not exist.
  */
-export const loadGithub = async (source: GithubSource, remote: string | null | undefined, run: Run): Promise<Loaded> => {
+const readProjects = async (source: GithubSource, remote: string | null | undefined, run: Run, known: number[] | undefined) => {
   const repo = repoOfRemote(remote)
   const owner = source.owner ?? repo?.owner
   if (owner === undefined) throw new Error('no owner: the repository has no origin remote')
 
-  const listed = await ghJson(run, ['project', 'list', '--owner', owner, '--format', 'json', '--limit', '100'])
-  const open = isRecord(listed) && Array.isArray(listed.projects) ? listed.projects.flatMap(toProject) : []
-  const missing = (source.projects ?? []).filter(title => !open.some(p => p.title === title))
-  if (missing.length > 0) throw new Error(`${owner} has no open Project titled "${missing.join('", "')}"`)
-  const projects = source.projects === undefined ? open : open.filter(p => source.projects?.includes(p.title))
+  let projects: { number: number }[]
+  if (known === undefined) {
+    const listed = await ghJson(run, ['project', 'list', '--owner', owner, '--format', 'json', '--limit', '100'])
+    const open = isRecord(listed) && Array.isArray(listed.projects) ? listed.projects.flatMap(toProject) : []
+    const missing = (source.projects ?? []).filter(title => !open.some(p => p.title === title))
+    if (missing.length > 0) throw new Error(`${owner} has no open Project titled "${missing.join('", "')}"`)
+    projects = source.projects === undefined ? open : open.filter(p => source.projects?.includes(p.title))
+  } else {
+    projects = known.map(number => ({ number }))
+  }
 
   const lists = await Promise.all(
     projects.map(p =>
@@ -92,17 +105,44 @@ export const loadGithub = async (source: GithubSource, remote: string | null | u
     ),
   )
   const here = repo === undefined ? undefined : `${repo.owner}/${repo.name}`.toLowerCase()
-  const items = lists
-    .flatMap(list => (isRecord(list) && Array.isArray(list.items) ? list.items.flatMap(toItem) : []))
-    .filter(item => here === undefined || item.repository.toLowerCase() === here)
+  const perProject = lists.map(list =>
+    (isRecord(list) && Array.isArray(list.items) ? list.items.flatMap(toItem) : []).filter(
+      item => here === undefined || item.repository.toLowerCase() === here,
+    ),
+  )
+  const items = perProject.flat()
+  const relevant = projects.filter((_, i) => (perProject[i]?.length ?? 0) > 0).map(p => p.number)
 
   const shown = source.statuses.join(' or ')
 
   return {
-    label: GITHUB_LABEL,
-    groups: groupByStatus(items, source.statuses),
-    noun: `in ${shown}`,
-    emptyText: `No issue in ${shown} on GitHub.`,
-    isAlwaysGrouped: true,
+    relevant,
+    loaded: {
+      label: GITHUB_LABEL,
+      groups: groupByStatus(items, source.statuses),
+      noun: `in ${shown}`,
+      emptyText: `No issue in ${shown} on GitHub.`,
+      isAlwaysGrouped: true,
+    } satisfies Loaded,
   }
+}
+
+/**
+ * Reads the tasks of the GitHub source. With `cache`, every session shares one
+ * read (see readCached); without it, every call reads GitHub.
+ */
+export const loadGithub = async (
+  source: GithubSource,
+  remote: string | null | undefined,
+  run: Run,
+  cache?: GithubCache,
+): Promise<Loaded> => {
+  if (cache === undefined) return (await readProjects(source, remote, run, undefined)).loaded
+  const repo = repoOfRemote(remote)
+  const owner = source.owner ?? repo?.owner
+  if (owner === undefined) throw new Error('no owner: the repository has no origin remote')
+
+  return readCached({ ...cache, key: cacheKey(source, owner, repo?.name) }, known =>
+    readProjects(source, remote, run, known),
+  )
 }

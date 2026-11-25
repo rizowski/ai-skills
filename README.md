@@ -161,7 +161,10 @@ Start the skill with `/orchestrator`, or `/orchestrator:orchestrator` if another
 The plugin adds a pane called **Orchestrator tasks**. It shows the tasks that the orchestrator tracks for the project of the session.
 
 - It opens when a session starts. Run `/orch-tasks` to open it and refresh it at any time.
-- It refreshes every 2 minutes. It also refreshes right after Claude changes a Work task, or runs a `gh` command that changes an issue or a Project item.
+- It checks every 2 minutes. It also checks right after Claude changes a Work task, or runs a `gh` command that changes an issue or a Project item.
+- The `github` source shares one read between all sessions. The result is kept for 10 minutes in `~/.claude/dev-mods/orchestrator-tasks-cache/`, and a lock makes one session read while the others wait. A check after a `gh` write reads again only when the shared result is older than 30 seconds.
+- After the first full scan, the pane reads only the Projects that held items of this repository. It scans every Project again after 24 hours, and after a `gh` write or `/orch-tasks`.
+- After a failed read, no session reads GitHub for 5 minutes, then 10, 20, 40 and at most 60. After a rate limit error, none reads for 30 minutes. When fewer than 300 GraphQL points are left (the `gh api rate_limit` call costs none), none reads until the limit resets. The pane shows the time of the next read.
 - If no source can be read, the pane shows an error line, keeps the last list and tries again.
 
 ### Sources

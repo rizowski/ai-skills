@@ -5,6 +5,7 @@ import type { Loaded, OrchView } from '../types'
 import { CONFIG_FILE, DEFAULT_SOURCES, parseConfig } from './config'
 import type { Source } from './config'
 import { GITHUB_LABEL, loadGithub } from './github'
+import type { GithubCache } from './github'
 import { isRecord } from './json'
 import { clockTime, loadWork, truncate, WORK_LABEL } from './tasks'
 
@@ -68,9 +69,25 @@ const readProject = async ($: EngineInterface) => {
   }
 }
 
-const loadSource = ($: EngineInterface, source: Source, remote: string | null): Promise<Loaded> =>
+/**
+ * Where the shared GitHub read is cached: a fixed folder under the user's
+ * `~/.claude`, the same for every session. Without HOME there is no cache.
+ */
+export const cacheDir = (home: string) => `${home.replace(/\/+$/, '')}/.claude/dev-mods/orchestrator-tasks-cache`
+
+const githubCache = async ($: EngineInterface, now: number): Promise<GithubCache | undefined> => {
+  try {
+    const home = await $.env.get('HOME')
+
+    return home ? { dir: cacheDir(home), now, isForced: isReadForced, run: argv => $.process.run(argv) } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const loadSource = async ($: EngineInterface, source: Source, remote: string | null, now: number): Promise<Loaded> =>
   source.type === 'github'
-    ? loadGithub(source, remote, argv => $.process.run(argv))
+    ? loadGithub(source, remote, argv => $.process.run(argv), await githubCache($, now))
     : loadWork(
         (server, tool, args) => $.mcp.call(server, tool, args),
         path => $.fs.read(path),
@@ -80,12 +97,12 @@ const loadSource = ($: EngineInterface, source: Source, remote: string | null): 
  * Tries the sources in order and resolves the first that reads, with the
  * failures of the ones before it. `loaded` is undefined when every source failed.
  */
-const loadFirst = async ($: EngineInterface, sources: Source[], remote: string | null) => {
+const loadFirst = async ($: EngineInterface, sources: Source[], remote: string | null, now: number) => {
   const failures: Failure[] = []
   for (const source of sources) {
     try {
       // The order is the fallback order, so each source waits for the one before it.
-      return { loaded: await loadSource($, source, remote), failures }
+      return { loaded: await loadSource($, source, remote, now), failures }
     } catch (err) {
       failures.push({
         source: labelOf(source),
@@ -106,7 +123,7 @@ const loadFirst = async ($: EngineInterface, sources: Source[], remote: string |
 const readTasks = async ($: EngineInterface, now: number): Promise<{ loaded?: Loaded; error: string | null }> => {
   try {
     const { sources, remote } = await readProject($)
-    const { loaded, failures } = await loadFirst($, sources, remote)
+    const { loaded, failures } = await loadFirst($, sources, remote, now)
     if (!loaded || failures.some(f => f.shape !== null)) await recordFailures($, now, failures)
     if (loaded) return { loaded, error: null }
 
@@ -132,13 +149,18 @@ const refreshOnce = async ($: EngineInterface) => {
 
 let running: Promise<void> | undefined
 let isStale = false
+/** Set by a refresh that follows a write: the shared GitHub read may be reused only if it is under 30 seconds old. */
+let isForced = false
+/** The value of `isForced` that the read in progress started with. */
+let isReadForced = false
 
 /**
  * Refreshes the pane. One read runs at a time: a call during a read asks for
  * one more read after it, so a burst of task writes costs two reads, and the
  * last read always starts after the last write. Never throws.
  */
-const refresh = ($: EngineInterface): Promise<void> => {
+const refresh = ($: EngineInterface, isAfterWrite = false): Promise<void> => {
+  if (isAfterWrite) isForced = true
   if (running) {
     isStale = true
 
@@ -147,6 +169,8 @@ const refresh = ($: EngineInterface): Promise<void> => {
   running = (async () => {
     do {
       isStale = false
+      isReadForced = isForced
+      isForced = false
       await refreshOnce($)
     } while (isStale)
   })().finally(() => {
@@ -178,21 +202,21 @@ export const register: Register = on => {
 
   on('command.run', { command: 'orch-tasks' }, async $ => {
     await $.ui.open({ id: PANE, title: TITLE })
-    await refresh($)
+    await refresh($, true)
 
     return { text: 'Orchestrator tasks pane opened and refreshed.' }
   })
 
   on('tool.call', { tool: WORK_WRITE_TOOLS }, async ($, e, next) => {
     const result = await next(e)
-    void refresh($)
+    void refresh($, true)
 
     return result
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const result = await next(e)
-    if (typeof e.command === 'string' && GH_WRITE.test(e.command)) void refresh($)
+    if (typeof e.command === 'string' && GH_WRITE.test(e.command)) void refresh($, true)
 
     return result
   }).catch(($, e, next) => next(e))
