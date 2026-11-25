@@ -347,3 +347,164 @@ test('a gh command that moves an issue refreshes the pane, and another command d
   await clock.settle()
   expect(calls.length).toBe(before + 3)
 })
+
+const CACHE = '/home/someone/.claude/dev-mods/orchestrator-tasks-cache'
+const CACHE_FILE = `${CACHE}/github-acme__shop_____Doing,Review.json`
+const MINUTE = 60 * 1000
+
+/**
+ * Stands for the shell and `gh` of a machine whose home is `/home/someone`:
+ * `files` holds the cache and lock files, `limit` is the GraphQL points left,
+ * `isFailing` makes every `gh project` command fail with a rate limit error.
+ * Records each `gh project` call in `calls`.
+ */
+const sharedGh = (on: Parameters<TestBody>[1], files: Map<string, string>, state: { remaining: number; isFailing: boolean }) => {
+  const calls: string[] = []
+  on('env.get', () => ({ value: '/home/someone' }))
+  on('process.run', (_, e) => {
+    const [cmd, ...rest] = e.argv
+    const done = (stdout: string, exitCode = 0, stderr = '') => ({
+      value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false },
+    })
+    if (cmd === 'cat') {
+      const text = files.get(rest[0] ?? '')
+
+      return text === undefined ? done('', 1) : done(text)
+    }
+    if (cmd === 'rm') {
+      files.delete(rest[1] ?? '')
+
+      return done('')
+    }
+    if (cmd === 'sh') {
+      const [, , script = '', , file = '', text = ''] = e.argv
+      if (script.includes('set -C')) {
+        if (files.has(file)) return done('held\n')
+        files.set(file, text)
+
+        return done('taken\n')
+      }
+      files.set(file, text)
+
+      return done('')
+    }
+    if (rest[0] === 'api') {
+      return done(JSON.stringify({ limit: 5000, remaining: state.remaining, used: 5000 - state.remaining, reset: Date.UTC(2026, 10, 16, 13, 0) / 1000 }))
+    }
+    calls.push(e.argv.join(' '))
+    if (state.isFailing) return done('', 1, 'GraphQL: API rate limit already exceeded for user ID 1')
+
+    return done(rest[1] === 'list' ? JSON.stringify(GH_PROJECTS) : JSON.stringify(GH_ITEMS[rest[2] ?? ''] ?? { items: [] }))
+  })
+
+  return calls
+}
+
+const FULL_SCAN = [
+  'gh project list --owner acme --format json --limit 100',
+  'gh project item-list 1 --owner acme --format json --limit 500',
+  'gh project item-list 2 --owner acme --format json --limit 500',
+]
+
+test('one GitHub read serves every tick for ten minutes, then reads only the Projects that held this repository', async ($, on) => {
+  on('mcp.call', NOT_CONNECTED)
+  const files = new Map<string, string>()
+  const calls = sharedGh(on, files, { remaining: 4000, isFailing: false })
+  const clock = await start($, on)
+  expect(calls).toEqual(FULL_SCAN)
+
+  await clock.advance(8 * MINUTE)
+  expect(calls).toHaveLength(3)
+  expect(files.has(`${CACHE_FILE}.lock`)).toBe(false)
+
+  await clock.advance(4 * MINUTE)
+  expect(calls.slice(3)).toEqual([
+    'gh project item-list 1 --owner acme --format json --limit 500',
+    'gh project item-list 2 --owner acme --format json --limit 500',
+  ])
+})
+
+test('a session that finds a fresh shared cache reads nothing from GitHub', async ($, on) => {
+  on('mcp.call', NOT_CONNECTED)
+  const loaded = {
+    label: 'GitHub',
+    noun: 'in Doing or Review',
+    emptyText: 'none',
+    isAlwaysGrouped: true,
+    groups: [{ id: 'Doing', title: 'Doing', tasks: [1, 2, 3].map(n => ({ id: `acme/shop#${n}`, title: `T${n}`, tag: `#${n}`, tone: 'subtle', isBlocked: false })) }],
+  }
+  const entry = { fetchedAt: Date.UTC(2026, 10, 16, 12, 0) - MINUTE, loaded, relevant: [1, 2], scannedAt: Date.UTC(2026, 10, 16, 12, 0) - MINUTE }
+  const files = new Map<string, string>([[CACHE_FILE, JSON.stringify(entry)]])
+  const calls = sharedGh(on, files, { remaining: 4000, isFailing: false })
+  await start($, on)
+
+  expect(calls).toEqual([])
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /GitHub/ }))?.text).toMatch(/^3 in Doing or Review · GitHub/)
+  await ui.unmount()
+})
+
+test('a rate limit error stops every read until the back-off ends, and never retries at once', async ($, on) => {
+  on('mcp.call', NOT_CONNECTED)
+  const files = new Map<string, string>()
+  const state = { remaining: 4000, isFailing: true }
+  const calls = sharedGh(on, files, state)
+  const clock = await start($, on)
+  expect(calls).toEqual(['gh project list --owner acme --format json --limit 100'])
+
+  await clock.advance(20 * MINUTE)
+  expect(calls).toHaveLength(1)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /Not asking again until/ }))?.text).toMatch(/rate limit already exceeded/)
+  await ui.unmount()
+
+  state.isFailing = false
+  await clock.advance(15 * MINUTE)
+  expect(calls.slice(1)).toEqual(FULL_SCAN)
+})
+
+test('few GraphQL points left means no read before the reset', async ($, on) => {
+  on('mcp.call', NOT_CONNECTED)
+  const files = new Map<string, string>()
+  const state = { remaining: 120, isFailing: false }
+  const calls = sharedGh(on, files, state)
+  const clock = await start($, on)
+  expect(calls).toEqual([])
+
+  await clock.advance(30 * MINUTE)
+  expect(calls).toEqual([])
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /Only 120 GitHub GraphQL points/ }))?.text).toBeDefined()
+  await ui.unmount()
+})
+
+test('a session waits for the lock that another session holds and reads nothing', async ($, on) => {
+  on('mcp.call', NOT_CONNECTED)
+  const files = new Map<string, string>([[`${CACHE_FILE}.lock`, String(Date.UTC(2026, 10, 16, 12, 0))]])
+  const calls = sharedGh(on, files, { remaining: 4000, isFailing: false })
+  await start($, on)
+
+  expect(calls).toEqual([])
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /Another session is reading GitHub/ }))?.text).toBeDefined()
+  await ui.unmount()
+})
+
+test('a gh write right after a read does not read again, and a write after 30 seconds does', async ($, on) => {
+  on('mcp.call', NOT_CONNECTED)
+  on('tool.call', () => ({ result: { ok: true } }))
+  const files = new Map<string, string>()
+  const calls = sharedGh(on, files, { remaining: 4000, isFailing: false })
+  const clock = await start($, on)
+  expect(calls).toHaveLength(3)
+
+  const edit = 'gh project item-edit 2 --owner acme --url u --field Status --value Doing'
+  await $.tool.call({ tool: 'Bash', command: edit })
+  await clock.settle()
+  expect(calls).toHaveLength(3)
+
+  await clock.advance(MINUTE)
+  await $.tool.call({ tool: 'Bash', command: edit })
+  await clock.settle()
+  expect(calls).toHaveLength(6)
+})
