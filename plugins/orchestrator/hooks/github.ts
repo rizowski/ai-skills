@@ -96,7 +96,7 @@ const readProjects = async (source: GithubSource, remote: string | null | undefi
   const wanted = source.projects === undefined ? open : open.filter(p => source.projects?.includes(p.title))
   const seen = wanted.map(p => p.number)
   // A Project that was not seen at the last read may hold items of this repository: read them all.
-  const isFull = known === undefined || seen.some(number => !(lastSeen ?? []).includes(number))
+  const isFull = known === undefined || lastSeen === undefined || seen.some(number => !lastSeen.includes(number))
   const projects = isFull ? wanted : wanted.filter(p => known.includes(p.number))
 
   const lists = await Promise.all(
