@@ -358,7 +358,7 @@ const MINUTE = 60 * 1000
  * `isFailing` makes every `gh project` command fail with a rate limit error.
  * Records each `gh project` call in `calls`.
  */
-const sharedGh = (on: Parameters<TestBody>[1], files: Map<string, string>, state: { remaining: number; isFailing: boolean; projects?: typeof GH_PROJECTS }) => {
+const sharedGh = (on: Parameters<TestBody>[1], files: Map<string, string>, state: { remaining: number; isFailing: boolean; projects?: typeof GH_PROJECTS; lockMtime?: number }) => {
   const calls: string[] = []
   on('env.get', () => ({ value: '/home/someone' }))
   on('process.run', (_, e) => {
@@ -378,6 +378,12 @@ const sharedGh = (on: Parameters<TestBody>[1], files: Map<string, string>, state
     }
     if (cmd === 'sh') {
       const [, , script = '', , file = '', text = ''] = e.argv
+      if (script.includes('stat -c')) return state.lockMtime === undefined ? done('', 1) : done(`${state.lockMtime / 1000}\n`)
+      if (script.includes('rm -f')) {
+        if (files.get(file) === text) files.delete(file)
+
+        return done('')
+      }
       if (script.includes('set -C')) {
         if (files.has(file)) return done('held\n')
         files.set(file, text)
@@ -521,6 +527,16 @@ test('a lock file that is still empty is not stale, so the session does not take
 
   expect(calls).toEqual([])
   expect(files.get(`${CACHE_FILE}.lock`)).toBe('')
+})
+
+test('a lock file that stays empty past the stale time is broken, and the session reads', async ($, on) => {
+  on('mcp.call', NOT_CONNECTED)
+  const files = new Map<string, string>([[`${CACHE_FILE}.lock`, '']])
+  const calls = sharedGh(on, files, { remaining: 4000, isFailing: false, lockMtime: Date.UTC(2026, 10, 16, 12, 0) - 5 * MINUTE })
+  await start($, on)
+
+  expect(calls).toEqual(FULL_SCAN)
+  expect(files.has(`${CACHE_FILE}.lock`)).toBe(false)
 })
 
 test('a gh write right after a read does not read again, and a write after 30 seconds does', async ($, on) => {

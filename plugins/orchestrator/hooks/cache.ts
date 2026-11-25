@@ -75,6 +75,14 @@ const writeEntry = async (run: Run, file: string, entry: Entry) => {
   await run(['sh', '-c', script, 'sh', file, JSON.stringify(entry)]).catch(() => undefined)
 }
 
+/** When the lock file was last changed, in ms; NaN when the platform gives no answer (GNU or BSD `stat`). */
+const lockMtime = async (run: Run, lock: string) => {
+  const script = 'stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null'
+  const result = await run(['sh', '-c', script, 'sh', lock]).catch(() => undefined)
+
+  return result?.exitCode === 0 ? Number(result.stdout.trim()) * 1000 : NaN
+}
+
 /**
  * Takes the lock file with an exclusive create. Resolves `held` only when
  * another session holds a lock younger than two minutes; any other outcome
@@ -84,10 +92,10 @@ const takeLock = async (run: Run, lock: string, now: number, retry = true): Prom
   const script = 'mkdir -p "$(dirname "$1")" && if (set -C; printf %s "$2" > "$1") 2>/dev/null; then echo taken; else echo held; fi'
   const result = await run(['sh', '-c', script, 'sh', lock, String(now)]).catch(() => undefined)
   if (result?.exitCode !== 0 || result.stdout.trim() !== 'held') return 'taken'
-  // An empty file is a lock that its owner is still writing, not a stale one.
+  // An empty file is a lock that its owner is still writing, or one whose owner died; its age is the file's mtime.
   const text = (await run(['cat', lock]).catch(() => undefined))?.stdout.trim() ?? ''
-  const since = Number(text)
-  if (retry && text !== '' && Number.isFinite(since) && now - since > LOCK_STALE_MS) {
+  const since = text === '' ? await lockMtime(run, lock) : Number(text)
+  if (retry && Number.isFinite(since) && now - since > LOCK_STALE_MS) {
     // Remove it only if it still holds the stale time, so a lock that another session just took stays.
     await run(['sh', '-c', '[ "$(cat "$1" 2>/dev/null)" = "$2" ] && rm -f "$1"', 'sh', lock, text]).catch(() => undefined)
 
