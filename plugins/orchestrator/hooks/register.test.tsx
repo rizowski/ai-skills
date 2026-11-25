@@ -490,6 +490,16 @@ test('a session waits for the lock that another session holds and reads nothing'
   await ui.unmount()
 })
 
+test('a lock file that is still empty is not stale, so the session does not take it', async ($, on) => {
+  on('mcp.call', NOT_CONNECTED)
+  const files = new Map<string, string>([[`${CACHE_FILE}.lock`, '']])
+  const calls = sharedGh(on, files, { remaining: 4000, isFailing: false })
+  await start($, on)
+
+  expect(calls).toEqual([])
+  expect(files.get(`${CACHE_FILE}.lock`)).toBe('')
+})
+
 test('a gh write right after a read does not read again, and a write after 30 seconds does', async ($, on) => {
   on('mcp.call', NOT_CONNECTED)
   on('tool.call', () => ({ result: { ok: true } }))

@@ -61,7 +61,7 @@ const readEntry = async (run: Run, file: string): Promise<Entry> => {
 
 /** Writes the entry through a temporary file and a rename, so no reader sees half a file. Best effort. */
 const writeEntry = async (run: Run, file: string, entry: Entry) => {
-  const script = 'mkdir -p "$(dirname "$1")" && printf %s "$2" > "$1.tmp" && mv "$1.tmp" "$1"'
+  const script = 'mkdir -p "$(dirname "$1")" && printf %s "$2" > "$1.$$.tmp" && mv "$1.$$.tmp" "$1"'
   await run(['sh', '-c', script, 'sh', file, JSON.stringify(entry)]).catch(() => undefined)
 }
 
@@ -74,9 +74,12 @@ const takeLock = async (run: Run, lock: string, now: number, retry = true): Prom
   const script = 'mkdir -p "$(dirname "$1")" && if (set -C; printf %s "$2" > "$1") 2>/dev/null; then echo taken; else echo held; fi'
   const result = await run(['sh', '-c', script, 'sh', lock, String(now)]).catch(() => undefined)
   if (result?.exitCode !== 0 || result.stdout.trim() !== 'held') return 'taken'
-  const since = Number((await run(['cat', lock]).catch(() => undefined))?.stdout.trim())
-  if (retry && Number.isFinite(since) && now - since > LOCK_STALE_MS) {
-    await run(['rm', '-f', lock]).catch(() => undefined)
+  // An empty file is a lock that its owner is still writing, not a stale one.
+  const text = (await run(['cat', lock]).catch(() => undefined))?.stdout.trim() ?? ''
+  const since = Number(text)
+  if (retry && text !== '' && Number.isFinite(since) && now - since > LOCK_STALE_MS) {
+    // Remove it only if it still holds the stale time, so a lock that another session just took stays.
+    await run(['sh', '-c', '[ "$(cat "$1" 2>/dev/null)" = "$2" ] && rm -f "$1"', 'sh', lock, text]).catch(() => undefined)
 
     return takeLock(run, lock, now, false)
   }
@@ -141,11 +144,22 @@ export const readCached = async (cache: Cached, fetch: Fetch): Promise<Loaded> =
 
     const isScanFresh = entry.relevant !== undefined && now - (entry.scannedAt ?? 0) < RESCAN_MS
     try {
-      const { loaded, relevant } = await fetch(isScanFresh && !isForced ? entry.relevant : undefined)
-      const scanned = isScanFresh && !isForced ? { scannedAt: entry.scannedAt } : { scannedAt: now }
-      await writeEntry(run, file, { fetchedAt: now, loaded, relevant, ...scanned, failures: 0 })
+      const isPartial = isScanFresh && !isForced
+      let isFull = !isPartial
+      let result
+      try {
+        result = await fetch(isPartial ? entry.relevant : undefined)
+      } catch (err) {
+        // A listed Project may be closed or deleted. Try a full scan once before the read counts as failed.
+        const message = err instanceof Error ? err.message : ''
+        if (!isPartial || isRateLimitError(message)) throw err
+        isFull = true
+        result = await fetch(undefined)
+      }
+      const scannedAt = isFull ? now : entry.scannedAt
+      await writeEntry(run, file, { fetchedAt: now, loaded: result.loaded, relevant: result.relevant, scannedAt, failures: 0 })
 
-      return loaded
+      return result.loaded
     } catch (err) {
       const message = err instanceof Error && err.message ? err.message : 'the call failed'
       const failures = (entry.failures ?? 0) + 1
