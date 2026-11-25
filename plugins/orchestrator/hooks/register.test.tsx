@@ -358,7 +358,7 @@ const MINUTE = 60 * 1000
  * `isFailing` makes every `gh project` command fail with a rate limit error.
  * Records each `gh project` call in `calls`.
  */
-const sharedGh = (on: Parameters<TestBody>[1], files: Map<string, string>, state: { remaining: number; isFailing: boolean }) => {
+const sharedGh = (on: Parameters<TestBody>[1], files: Map<string, string>, state: { remaining: number; isFailing: boolean; projects?: typeof GH_PROJECTS; lockMtime?: number }) => {
   const calls: string[] = []
   on('env.get', () => ({ value: '/home/someone' }))
   on('process.run', (_, e) => {
@@ -378,6 +378,12 @@ const sharedGh = (on: Parameters<TestBody>[1], files: Map<string, string>, state
     }
     if (cmd === 'sh') {
       const [, , script = '', , file = '', text = ''] = e.argv
+      if (script.includes('stat -c')) return state.lockMtime === undefined ? done('', 1) : done(`${state.lockMtime / 1000}\n`)
+      if (script.includes('rm -f')) {
+        if (files.get(file) === text) files.delete(file)
+
+        return done('')
+      }
       if (script.includes('set -C')) {
         if (files.has(file)) return done('held\n')
         files.set(file, text)
@@ -394,7 +400,7 @@ const sharedGh = (on: Parameters<TestBody>[1], files: Map<string, string>, state
     calls.push(e.argv.join(' '))
     if (state.isFailing) return done('', 1, 'GraphQL: API rate limit already exceeded for user ID 1')
 
-    return done(rest[1] === 'list' ? JSON.stringify(GH_PROJECTS) : JSON.stringify(GH_ITEMS[rest[2] ?? ''] ?? { items: [] }))
+    return done(rest[1] === 'list' ? JSON.stringify(state.projects ?? GH_PROJECTS) : JSON.stringify(GH_ITEMS[rest[2] ?? ''] ?? { items: [] }))
   })
 
   return calls
@@ -419,9 +425,32 @@ test('one GitHub read serves every tick for ten minutes, then reads only the Pro
 
   await clock.advance(4 * MINUTE)
   expect(calls.slice(3)).toEqual([
+    'gh project list --owner acme --format json --limit 100',
     'gh project item-list 1 --owner acme --format json --limit 500',
     'gh project item-list 2 --owner acme --format json --limit 500',
   ])
+})
+
+test('a Project that is new since the last read makes the next read a full scan', async ($, on) => {
+  on('mcp.call', NOT_CONNECTED)
+  const files = new Map<string, string>()
+  const state = { remaining: 4000, isFailing: false, projects: GH_PROJECTS }
+  const calls = sharedGh(on, files, state)
+  const clock = await start($, on)
+  expect(calls).toEqual(FULL_SCAN)
+
+  state.projects = { projects: [...GH_PROJECTS.projects, { number: 4, title: 'Fresh', closed: false }] }
+  await clock.advance(12 * MINUTE)
+  expect(calls.slice(3)).toEqual([
+    'gh project list --owner acme --format json --limit 100',
+    'gh project item-list 1 --owner acme --format json --limit 500',
+    'gh project item-list 2 --owner acme --format json --limit 500',
+    'gh project item-list 4 --owner acme --format json --limit 500',
+  ])
+
+  // Project 4 is seen now and held nothing, so the next read goes back to the short form.
+  await clock.advance(12 * MINUTE)
+  expect(calls.slice(7)).toEqual(FULL_SCAN)
 })
 
 test('a session that finds a fresh shared cache reads nothing from GitHub', async ($, on) => {
@@ -488,6 +517,26 @@ test('a session waits for the lock that another session holds and reads nothing'
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /Another session is reading GitHub/ }))?.text).toBeDefined()
   await ui.unmount()
+})
+
+test('a lock file that is still empty is not stale, so the session does not take it', async ($, on) => {
+  on('mcp.call', NOT_CONNECTED)
+  const files = new Map<string, string>([[`${CACHE_FILE}.lock`, '']])
+  const calls = sharedGh(on, files, { remaining: 4000, isFailing: false })
+  await start($, on)
+
+  expect(calls).toEqual([])
+  expect(files.get(`${CACHE_FILE}.lock`)).toBe('')
+})
+
+test('a lock file that stays empty past the stale time is broken, and the session reads', async ($, on) => {
+  on('mcp.call', NOT_CONNECTED)
+  const files = new Map<string, string>([[`${CACHE_FILE}.lock`, '']])
+  const calls = sharedGh(on, files, { remaining: 4000, isFailing: false, lockMtime: Date.UTC(2026, 10, 16, 12, 0) - 5 * MINUTE })
+  await start($, on)
+
+  expect(calls).toEqual(FULL_SCAN)
+  expect(files.has(`${CACHE_FILE}.lock`)).toBe(false)
 })
 
 test('a gh write right after a read does not read again, and a write after 30 seconds does', async ($, on) => {

@@ -79,25 +79,25 @@ const cacheKey = (source: GithubSource, owner: string, name: string | undefined)
 /**
  * Reads the issues and pull requests of this repository from the owner's
  * GitHub Projects, with the `gh` CLI, and keeps those whose Status is listed.
- * `known` lists the Project numbers to read, which skips `gh project list` and
- * the Projects that held nothing of this repository. Throws when `gh` fails,
+ * `known` lists the Project numbers that held items of this repository, and
+ * `lastSeen` the Projects that existed at the last read. `gh project list` runs
+ * every time; only the `known` Projects are read unless one is new. Throws when `gh` fails,
  * when no owner is known, or when a listed Project title does not exist.
  */
-const readProjects = async (source: GithubSource, remote: string | null | undefined, run: Run, known: number[] | undefined) => {
+const readProjects = async (source: GithubSource, remote: string | null | undefined, run: Run, known: number[] | undefined, lastSeen: number[] | undefined) => {
   const repo = repoOfRemote(remote)
   const owner = source.owner ?? repo?.owner
   if (owner === undefined) throw new Error('no owner: the repository has no origin remote')
 
-  let projects: { number: number }[]
-  if (known === undefined) {
-    const listed = await ghJson(run, ['project', 'list', '--owner', owner, '--format', 'json', '--limit', '100'])
-    const open = isRecord(listed) && Array.isArray(listed.projects) ? listed.projects.flatMap(toProject) : []
-    const missing = (source.projects ?? []).filter(title => !open.some(p => p.title === title))
-    if (missing.length > 0) throw new Error(`${owner} has no open Project titled "${missing.join('", "')}"`)
-    projects = source.projects === undefined ? open : open.filter(p => source.projects?.includes(p.title))
-  } else {
-    projects = known.map(number => ({ number }))
-  }
+  const listed = await ghJson(run, ['project', 'list', '--owner', owner, '--format', 'json', '--limit', '100'])
+  const open = isRecord(listed) && Array.isArray(listed.projects) ? listed.projects.flatMap(toProject) : []
+  const missing = (source.projects ?? []).filter(title => !open.some(p => p.title === title))
+  if (missing.length > 0) throw new Error(`${owner} has no open Project titled "${missing.join('", "')}"`)
+  const wanted = source.projects === undefined ? open : open.filter(p => source.projects?.includes(p.title))
+  const seen = wanted.map(p => p.number)
+  // A Project that was not seen at the last read may hold items of this repository: read them all.
+  const isFull = known === undefined || lastSeen === undefined || seen.some(number => !lastSeen.includes(number))
+  const projects = isFull ? wanted : wanted.filter(p => known.includes(p.number))
 
   const lists = await Promise.all(
     projects.map(p =>
@@ -117,6 +117,8 @@ const readProjects = async (source: GithubSource, remote: string | null | undefi
 
   return {
     relevant,
+    seen,
+    isFull,
     loaded: {
       label: GITHUB_LABEL,
       groups: groupByStatus(items, source.statuses),
@@ -137,12 +139,12 @@ export const loadGithub = async (
   run: Run,
   cache?: GithubCache,
 ): Promise<Loaded> => {
-  if (cache === undefined) return (await readProjects(source, remote, run, undefined)).loaded
+  if (cache === undefined) return (await readProjects(source, remote, run, undefined, undefined)).loaded
   const repo = repoOfRemote(remote)
   const owner = source.owner ?? repo?.owner
   if (owner === undefined) throw new Error('no owner: the repository has no origin remote')
 
-  return readCached({ ...cache, key: cacheKey(source, owner, repo?.name) }, known =>
-    readProjects(source, remote, run, known),
+  return readCached({ ...cache, key: cacheKey(source, owner, repo?.name) }, (known, seen) =>
+    readProjects(source, remote, run, known, seen),
   )
 }

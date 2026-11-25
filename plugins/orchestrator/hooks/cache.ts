@@ -26,6 +26,8 @@ export type Entry = {
   loaded?: Loaded
   /** Numbers of the Projects that held items of the repository at the last full scan. */
   relevant?: number[]
+  /** Numbers of every open Project that the source reads, as of the last read; a Project missing here is new. */
+  seen?: number[]
   scannedAt?: number
   /** Reads that failed in a row. */
   failures?: number
@@ -46,8 +48,16 @@ export type Cached = {
   run: Run
 }
 
-/** One read of GitHub. `known` lists the Projects to read; absent, every Project is read. */
-export type Fetch = (known: number[] | undefined) => Promise<{ loaded: Loaded; relevant: number[] }>
+/**
+ * One read of GitHub. `known` and `seen` come from the last read. It lists the
+ * Projects every time, and reads only `known` when no Project is new since
+ * `seen`; otherwise (or when `known` is absent) it reads every Project and
+ * resolves `isFull`.
+ */
+export type Fetch = (
+  known: number[] | undefined,
+  seen: number[] | undefined,
+) => Promise<{ loaded: Loaded; relevant: number[]; seen: number[]; isFull: boolean }>
 
 export const isRateLimitError = (message: string) => /rate limit|unknown owner type|\b50[23]\b/i.test(message)
 
@@ -61,8 +71,16 @@ const readEntry = async (run: Run, file: string): Promise<Entry> => {
 
 /** Writes the entry through a temporary file and a rename, so no reader sees half a file. Best effort. */
 const writeEntry = async (run: Run, file: string, entry: Entry) => {
-  const script = 'mkdir -p "$(dirname "$1")" && printf %s "$2" > "$1.tmp" && mv "$1.tmp" "$1"'
+  const script = 'mkdir -p "$(dirname "$1")" && printf %s "$2" > "$1.$$.tmp" && mv "$1.$$.tmp" "$1"'
   await run(['sh', '-c', script, 'sh', file, JSON.stringify(entry)]).catch(() => undefined)
+}
+
+/** When the lock file was last changed, in ms; NaN when the platform gives no answer (GNU or BSD `stat`). */
+const lockMtime = async (run: Run, lock: string) => {
+  const script = 'stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null'
+  const result = await run(['sh', '-c', script, 'sh', lock]).catch(() => undefined)
+
+  return result?.exitCode === 0 ? Number(result.stdout.trim()) * 1000 : NaN
 }
 
 /**
@@ -74,9 +92,12 @@ const takeLock = async (run: Run, lock: string, now: number, retry = true): Prom
   const script = 'mkdir -p "$(dirname "$1")" && if (set -C; printf %s "$2" > "$1") 2>/dev/null; then echo taken; else echo held; fi'
   const result = await run(['sh', '-c', script, 'sh', lock, String(now)]).catch(() => undefined)
   if (result?.exitCode !== 0 || result.stdout.trim() !== 'held') return 'taken'
-  const since = Number((await run(['cat', lock]).catch(() => undefined))?.stdout.trim())
+  // An empty file is a lock that its owner is still writing, or one whose owner died; its age is the file's mtime.
+  const text = (await run(['cat', lock]).catch(() => undefined))?.stdout.trim() ?? ''
+  const since = text === '' ? await lockMtime(run, lock) : Number(text)
   if (retry && Number.isFinite(since) && now - since > LOCK_STALE_MS) {
-    await run(['rm', '-f', lock]).catch(() => undefined)
+    // Remove it only if it still holds the stale time, so a lock that another session just took stays.
+    await run(['sh', '-c', '[ "$(cat "$1" 2>/dev/null)" = "$2" ] && rm -f "$1"', 'sh', lock, text]).catch(() => undefined)
 
     return takeLock(run, lock, now, false)
   }
@@ -141,11 +162,20 @@ export const readCached = async (cache: Cached, fetch: Fetch): Promise<Loaded> =
 
     const isScanFresh = entry.relevant !== undefined && now - (entry.scannedAt ?? 0) < RESCAN_MS
     try {
-      const { loaded, relevant } = await fetch(isScanFresh && !isForced ? entry.relevant : undefined)
-      const scanned = isScanFresh && !isForced ? { scannedAt: entry.scannedAt } : { scannedAt: now }
-      await writeEntry(run, file, { fetchedAt: now, loaded, relevant, ...scanned, failures: 0 })
+      const isPartial = isScanFresh && !isForced
+      let result
+      try {
+        result = await fetch(isPartial ? entry.relevant : undefined, entry.seen)
+      } catch (err) {
+        // A listed Project may be closed or deleted. Try a full scan once before the read counts as failed.
+        const message = err instanceof Error ? err.message : ''
+        if (!isPartial || isRateLimitError(message)) throw err
+        result = await fetch(undefined, undefined)
+      }
+      const scannedAt = result.isFull ? now : entry.scannedAt
+      await writeEntry(run, file, { fetchedAt: now, loaded: result.loaded, relevant: result.relevant, seen: result.seen, scannedAt, failures: 0 })
 
-      return loaded
+      return result.loaded
     } catch (err) {
       const message = err instanceof Error && err.message ? err.message : 'the call failed'
       const failures = (entry.failures ?? 0) + 1
