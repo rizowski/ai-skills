@@ -188,6 +188,9 @@ Tasks live in a tracker, not in your head and not in the priorities file.
 - When nothing is left on a PR, swap its label for `ready for review` and ask me in your
   next message to review it, with the full PR URL. Add the reviewer with
   `gh pr edit <n> --add-reviewer <user>` unless the PR author is my own account.
+- Keep watching a `ready for review` PR until it merges or closes. On a merge conflict or
+  a failed check, send a fix worker at once, set a `step:` label, and ask for review again
+  when it is fixed. Details are in `references/pr-rules.md`.
 - When I change the priorities, update the file and its date.
 - Anything not in the file is a side quest. Take it only when every priority waits on me.
 

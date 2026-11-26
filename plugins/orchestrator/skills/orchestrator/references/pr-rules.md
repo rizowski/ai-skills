@@ -47,3 +47,18 @@ In the next message, ask me to review it, with the full PR URL. This is a "revie
 
 If the PR author is my own account, GitHub cannot request my review, so the label and the
 chat ask replace it. Otherwise also run `gh pr edit <n> --add-reviewer <user>`.
+
+## Watch after the ask
+
+A PR labeled `ready for review` is not finished. Watch it until it merges or closes.
+
+- Start a background poll, for example every 3 minutes:
+  `gh pr list --label "ready for review" --json number,state,mergeable,statusCheckRollup`.
+  Make it exit on a merge conflict (`mergeable` is `CONFLICTING`), a failed check, or a
+  merge. The exit wakes you.
+- When event subscriptions are available, prefer `gh event listen --resource <PR URL>
+  --event com.github.pull_request.state.changed.v1`.
+- On a conflict or a failed check, send a fix worker at once. Do not wait for me. Swap the
+  label back to a `step:` label, usually `step: fixing review`.
+- When the fix is done, swap to `ready for review` and ask me to review again.
+- After you handle an exit, start the poll again.
