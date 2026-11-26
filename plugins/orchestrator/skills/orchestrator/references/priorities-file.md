@@ -13,7 +13,7 @@ make each read cost more, and they go stale while the tracker moves on.
 3. Move each dated note, state note or history line that is still useful into a comment
    on its task. Drop a note that the tracker already holds, or that is no longer true.
 4. Move each step that waits on me into "Waiting on you", one line per step, with its
-   kind (phone check, merge, deploy or migration, decision, close) and task id.
+   kind (phone check, merge, deploy or migration, decision, close, review) and task id.
 5. A note that belongs to no task: create a task for it, or ask me once whether to drop
    it.
 6. Write the new file in the shape that the skill gives, and set "Last updated".

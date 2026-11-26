@@ -50,8 +50,8 @@ Last updated: <date>. Tracker: <tracker and project>.
 - merge | <task id> | <the PR and the step>
 ```
 
-- A "Waiting on you" line has one of five kinds: phone check, merge, deploy or migration,
-  decision, close. Add it when a worker reports the step; remove it when I do the step.
+- A "Waiting on you" line has one of six kinds: phone check, merge, deploy or migration,
+  decision, close, review. Add it when a worker reports the step; remove it when I do the step.
 - No dated notes, history or state. They go into task comments, where the next session
   and I find them. A short file keeps every launch cheap.
 - If the sweep says the file is over the limit, read `references/priorities-file.md` and
@@ -111,8 +111,10 @@ Each brief is the only context the worker gets. Include:
   (Compose screenshot or preview tests, Playwright, Storybook). Hand-drawn mockups do not
   count. Mocked or seeded data is fine. Take the before from origin/main and the after
   from the branch; for a new screen, say that there is no before. `gh` cannot upload
-  images or video, so commit the files on the branch and link the branch's raw files in
-  the PR body. Name the method in the PR. In your report, give the file path and describe
+  images or video, and evidence is never committed on the PR branch or in the PR diff.
+  Push it to the orphan branch `pr-evidence-<pr number>` and embed it in the PR body,
+  before and after side by side in a table (steps in `references/pr-rules.md`; paste
+  them into the brief). Name the method in the PR. In your report, give the file path and describe
   what the recording shows: motion, timing, flicker and the end state. I review the
   file.";
 - the finish line: a commit at each step (a `WIP:` commit if it must stop early), checks
@@ -177,9 +179,15 @@ Tasks live in a tracker, not in your head and not in the priorities file.
 - Before each status report, run the launch command of step 1 again instead of separate
   `gh` calls, and read the tasks you report on, so the report and the tracker agree. Show
   the `SPEND:` line in the report.
-- Before you report a UI PR as ready or as waiting on merge, confirm that the PR body has
-  both the before and the after recording or image, and that the worker described what
-  each shows. You do not open them. If one is missing, send the work back to the worker.
+- Before you report a UI PR as ready or as waiting on merge, confirm that the PR diff
+  has no evidence files (`gh pr diff <n> --name-only`), that the PR body embeds both the
+  before and the after recording or image, and that the worker described what each shows. You do not open them. If one is missing, send the work back to the worker.
+- Every open PR that you or a worker still works on carries exactly one `step:` label.
+  Change it at each transition (worker start, review start, fix start, done). Read
+  `references/pr-rules.md` for the labels and commands.
+- When nothing is left on a PR, swap its label for `ready for review` and ask me in your
+  next message to review it, with the full PR URL. Add the reviewer with
+  `gh pr edit <n> --add-reviewer <user>` unless the PR author is my own account.
 - When I change the priorities, update the file and its date.
 - Anything not in the file is a side quest. Take it only when every priority waits on me.
 
@@ -217,7 +225,7 @@ moves the wrong way for two weeks.
 ## Writing to me
 
 Start every report with **Waiting on you**: the steps only I can do, grouped by kind
-(phone check, merge, deploy or migration, decision, close), each with its task and the
+(phone check, merge, deploy or migration, decision, close, review), each with its task and the
 exact command, starting with `cd <absolute path>`. Grouped steps let me clear many tasks in
 one sitting. If nothing waits on me, say so in one line. Then the state per priority.
 
