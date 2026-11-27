@@ -17,7 +17,7 @@ The plugin ships two lean subagent types. They start with far less context than 
 
 Use `general-purpose` or a project specialist when a task needs MCP tools (cloud accounts, trackers, browsers). Give it an explicit `model`, or it runs on the orchestrator's model.
 
-A worker is done when its work is committed, the checks pass by exit code, its feature branch is pushed with a pull request open, the tracker task has a comment, and its report lists the user's steps with exact commands. Workers never push to the default branch, merge a pull request or force push.
+A worker is done when its work is committed, the checks pass by exit code, its feature branch is pushed with a pull request open, the tracker task has a comment, and its report lists the user's steps with exact commands. Workers never push to the default branch, merge a pull request or force push. The orchestrator reviews every worker PR itself with `/code-review high <PR>` (a worker's own `/code-review` forks and returns too late), sends confirmed findings to a fix worker that runs `/simplify`, and reviews again after fixes. It reports a PR as ready to merge only after this, and names the reviewed head commit.
 
 ## Models
 

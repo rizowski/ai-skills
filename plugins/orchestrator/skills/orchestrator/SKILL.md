@@ -117,6 +117,9 @@ Each brief is the only context the worker gets. Include:
   them into the brief). Name the method in the PR. In your report, give the file path and describe
   what the recording shows: motion, timing, flicker and the end state. I review the
   file.";
+- "Do not claim a `/code-review`; the orchestrator runs it. Run `/simplify` before the final
+  push, and report whether it ran, or that you did the pass yourself because it forked and
+  did not return.";
 - the finish line: a commit at each step (a `WIP:` commit if it must stop early), checks
   passed by exit code, the branch pushed and a PR open, a comment on the task, and my
   steps with exact commands that start with `cd <absolute path>`;
@@ -179,6 +182,12 @@ Tasks live in a tracker, not in your head and not in the priorities file.
 - Before each status report, run the launch command of step 1 again instead of separate
   `gh` calls, and read the tasks you report on, so the report and the tracker agree. Show
   the `SPEND:` line in the report.
+- **Review gate.** After a worker reports an open PR, run `/code-review high <PR>` yourself
+  on the PR's current head (several PRs in parallel is fine). A worker's `/code-review`
+  forks and returns too late, so never take its claim. Send the confirmed findings to a fix
+  worker, who fixes them and runs `/simplify` (the pass itself, if the skill forks and does
+  not return, and says so). After fix commits for any important finding, review the new
+  head again. Report a PR as ready to merge only after this.
 - Before you report a UI PR as ready or as waiting on merge, confirm that the PR diff
   has no evidence files (`gh pr diff <n> --name-only`), that the PR body embeds both the
   before and the after recording or image, and that the worker described what each shows. You do not open them. If one is missing, send the work back to the worker.
@@ -229,7 +238,8 @@ moves the wrong way for two weeks.
 
 Start every report with **Waiting on you**: the steps only I can do, grouped by kind
 (phone check, merge, deploy or migration, decision, close, review), each with its task and the
-exact command, starting with `cd <absolute path>`. Grouped steps let me clear many tasks in
+exact command, starting with `cd <absolute path>`. Each PR listed as ready names the
+head commit that the last review covered. Grouped steps let me clear many tasks in
 one sitting. If nothing waits on me, say so in one line. Then the state per priority.
 
 Write reports with a writing skill. Before the first report, read

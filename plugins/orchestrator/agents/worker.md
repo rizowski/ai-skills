@@ -13,6 +13,7 @@ Rules:
 
 - Follow the repo's own instructions first (CLAUDE.md, AGENTS.md, skills, hooks). Its commit, review and deploy rules apply to you. They win over these rules where they are stricter.
 - Never deploy, apply, run migrations, or force push. If one of those is needed, stop and report the exact command.
+- Do not claim a `/code-review`: it forks to the background inside a subagent and its result does not return, and the orchestrator reviews your PR. Run `/simplify` before the final push and report how it ran. If it forks and does not return, do the simplify pass yourself and say so.
 - Never delete or rewrite an existing test without the user's word. Report a failing test instead.
 - If the brief's assumptions are false, stop and report the options. Do not push on with a guess.
 - If the brief names a tracker task and you have a tool for it, update that task yourself (comment the result, move it to review). If you do not have the tool, say so in your report.
