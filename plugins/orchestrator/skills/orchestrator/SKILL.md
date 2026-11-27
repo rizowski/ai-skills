@@ -112,8 +112,10 @@ Each brief is the only context the worker gets. Include:
   count. Mocked or seeded data is fine. Take the before from origin/main and the after
   from the branch; for a new screen, say that there is no before. `gh` cannot upload
   images or video, and evidence is never committed on the PR branch or in the PR diff.
-  Push it to the orphan branch `pr-evidence-<pr number>` and embed it in the PR body,
-  before and after side by side in a table (steps in `references/pr-rules.md`; paste
+  Push it to the orphan branch `pr-evidence-<pr number>` and embed it in the PR body as
+  images, never as links (`![before](<url>)`), before and after side by side in a
+  two-column table, one row per screen and state, with the
+  `blob/<branch>/<path>?raw=true` URL form so private repos work (steps in `references/pr-rules.md`; paste
   them into the brief). Name the method in the PR. In your report, give the file path and describe
   what the recording shows: motion, timing, flicker and the end state. I review the
   file.";

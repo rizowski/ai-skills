@@ -19,7 +19,8 @@ push guard can allow only `git push origin <branch>`.
 4. Embed each image in the PR body as
    `![name](https://github.com/<owner>/<repo>/blob/pr-evidence-<pr>/<file>?raw=true)`.
    Link a video as `[name](same URL)`.
-5. Show before and after side by side in a two-column table, before on the left.
+5. Show before and after side by side in a two-column table, before on the left, one row per screen and state.
+   Never use links for images (a video gets a link under its poster image).
 6. When done, remove the evidence worktree. Leave the branch on the remote.
 
 Check: `gh pr diff <n> --name-only` lists no image or video file.
